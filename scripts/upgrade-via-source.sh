@@ -185,6 +185,35 @@ echo "[3/6] 安装当前版本（源码安装）..."
 echo "检查当前目录: $(pwd)"
 echo "检查openclaw版本: $(openclaw --version 2>/dev/null || echo 'openclaw not found')"
 
+# 版本比较函数：version_gte a b → a >= b 时返回真
+version_gte() {
+    [ "$(printf '%s\n' "$1" "$2" | sort -V | head -1)" = "$2" ]
+}
+
+OPENCLAW_VERSION="$(openclaw --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1 || true)"
+
+# --force：确认非 ClawHub 来源（本地路径）+ 覆盖已存在插件。
+#   2026.4.5 起引入；本地目录安装缺少该参数会报 "Install cancelled; rerun with --force"。
+INSTALL_FORCE_FLAG=""
+if [ -n "$OPENCLAW_VERSION" ] && version_gte "$OPENCLAW_VERSION" "2026.4.5"; then
+    INSTALL_FORCE_FLAG="--force"
+fi
+
+# --accept-capabilities：2026.8.0 起引入 capability consent，
+#   插件在 openclaw.plugin.json 中声明的能力需显式同意，否则报 "requires capability consent"。
+ACCEPT_CAPABILITIES_FLAG=""
+if [ -n "$OPENCLAW_VERSION" ] && version_gte "$OPENCLAW_VERSION" "2026.8.0"; then
+    ACCEPT_CAPABILITIES_FLAG="--accept-capabilities"
+fi
+
+# --dangerously-force-unsafe-install：仅 2026.3.30 ~ 2026.6.1 内置安全扫描时代用于绕过扫描；
+#   2026.6.2 起安全扫描移除，该参数废弃为 no-op（仅打印 deprecation 警告），不再附加。
+FORCE_UNSAFE_FLAG=""
+if [ -n "$OPENCLAW_VERSION" ] && version_gte "$OPENCLAW_VERSION" "2026.3.30" \
+        && ! version_gte "$OPENCLAW_VERSION" "2026.6.2"; then
+    FORCE_UNSAFE_FLAG="--dangerously-force-unsafe-install"
+fi
+
 LOCAL_PACKAGE_VERSION=$(node -e "
   try {
     const fs = require('fs');
@@ -353,7 +382,7 @@ if [ -d "$PROJ_DIR/node_modules" ]; then
     mv "$PROJ_DIR/node_modules" "$_NM_BACKUP"
 fi
 
-openclaw plugins install . --dangerously-force-unsafe-install 2>&1 | tee "$INSTALL_LOG" || true
+openclaw plugins install . $INSTALL_FORCE_FLAG $FORCE_UNSAFE_FLAG $ACCEPT_CAPABILITIES_FLAG 2>&1 | tee "$INSTALL_LOG" || true
 
 # ── 恢复 node_modules ──
 if [ -n "$_NM_BACKUP" ] && [ -d "$_NM_BACKUP" ]; then
@@ -474,7 +503,7 @@ else
             _NM_BACKUP="${TMPDIR:-/tmp}/.openclaw-qqbot-nm-bak-$$"
             mv "$PROJ_DIR/node_modules" "$_NM_BACKUP"
         fi
-        if openclaw plugins install . --dangerously-force-unsafe-install 2>&1 | tee -a "$INSTALL_LOG"; then
+        if openclaw plugins install . $INSTALL_FORCE_FLAG $FORCE_UNSAFE_FLAG $ACCEPT_CAPABILITIES_FLAG 2>&1 | tee -a "$INSTALL_LOG"; then
             for _candidate_name in openclaw-qqbot qqbot openclaw-qq; do
                 if [ -d "$HOME/.openclaw/extensions/$_candidate_name" ]; then
                     _plugin_dir_ok=1
