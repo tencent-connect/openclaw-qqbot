@@ -657,6 +657,45 @@ STT supports two-level configuration with priority fallback:
 - Set `enabled: false` to disable (default: `true`)
 - When configured, AI can generate and send voice messages
 
+MiniMax speech is used as a fallback when the OpenClaw runtime does not expose
+its own TTS provider. The QQBot plugin discovers a configured speech model and
+uses either the global or mainland China endpoint selected by `region`:
+
+```json
+{
+  "channels": {
+    "qqbot": {
+      "tts": {
+        "provider": "minimax-speech",
+        "region": "global_en",
+        "voice": "your-voice-id",
+        "outputFormat": "wav"
+      }
+    }
+  },
+  "models": {
+    "providers": {
+      "minimax-speech": {
+        "apiKey": "${MINIMAX_API_KEY}",
+        "models": [{ "id": "speech-2.8-hd" }],
+        "endpoints": [
+          { "region": "global_en", "url": "https://api.minimax.io/v1/t2a_v2" },
+          { "region": "cn_zh", "url": "https://api.minimaxi.com/v1/t2a_v2" }
+        ]
+      }
+    }
+  }
+}
+```
+
+Supported speech models are discovered from the provider configuration. The
+current model family includes `speech-2.8-hd`, `speech-2.8-turbo`,
+`speech-2.6-hd`, `speech-2.6-turbo`, `speech-02-hd`, `speech-02-turbo`,
+`speech-01-hd`, and `speech-01-turbo`. Audio output can be `mp3`, `wav`,
+`flac`, or `pcm`. Optional request settings include `voiceSetting`,
+`audioSetting`, `languageBoost`, `pronunciationDict`, `voiceModify`, and
+`subtitleEnable`.
+
 ---
 
 ## 📚 Documentation & Links
@@ -684,4 +723,3 @@ Thanks to [Tencent Cloud Lighthouse](https://cloud.tencent.com/product/lighthous
 <a href="https://cloud.tencent.com/product/lighthouse">
   <img alt="Tencent Cloud Lighthouse" src="./docs/images/lighthouse-head.png" height="500" style="max-width:80%; height:auto;"/>
 </a>
-

@@ -24,6 +24,7 @@ import { DeliverDebouncer } from '../outbound/debounce.js';
 import { StreamingController, shouldUseStreaming } from '../outbound/streaming-controller.js';
 import { getAdapters } from '../adapter/resolve.js';
 import { clearGroupHistory } from '../features/history-store.js';
+import { resolveTTSProvider } from '../outbound/tts-provider.js';
 
 
 /**
@@ -69,7 +70,8 @@ export async function dispatchToOpenClaw(
 
   const ctxPayload = buildCtxPayload({ assembled, envelope, route, msg, ctx, adapters });
 
-  const ttsRuntime = (runtime as any)?.tts ?? (runtime as any)?.channel?.runtimeContexts?.get?.('tts');
+  const ttsRuntime = (runtime as any)?.tts ?? (runtime as any)?.channel?.runtimeContexts?.get?.('tts'); // @adapter-bypass: TTS is not part of the channel adapter API
+  const ttsProvider = resolveTTSProvider(runtime, cfg);
 
   const debounceConfig = account.config?.deliverDebounce;
   const debouncer = debounceConfig?.enabled !== false
@@ -90,6 +92,7 @@ export async function dispatchToOpenClaw(
       to,
       source,
       text: opts?.text ?? '',
+      mediaKind: opts?.mediaKind,
       replyToId: envelope.messageId,
       accountId: account.accountId,
       agentId: route.agentId,
@@ -97,7 +100,15 @@ export async function dispatchToOpenClaw(
     }),
     textToSpeech: ttsRuntime?.textToSpeech
       ? (params) => ttsRuntime.textToSpeech(params)
-      : undefined,
+      : ttsProvider
+        ? async (params) => {
+            try {
+              return { audioPath: await ttsProvider.textToSpeech(params) };
+            } catch (error) {
+              return { audioPath: null, error: error instanceof Error ? error.message : String(error) };
+            }
+          }
+        : undefined,
     audioFileToSilkBase64: ttsRuntime?.audioFileToSilkBase64
       ? (audioPath: string) => ttsRuntime.audioFileToSilkBase64(audioPath)
       : undefined,

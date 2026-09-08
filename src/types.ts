@@ -13,6 +13,7 @@ export interface QQBotConfig {
   clientSecretFile?: string;
 }
 
+
 /**
  * 解析后的 QQ Bot 账户
  */
@@ -159,6 +160,8 @@ export interface QQBotAccountConfig {
    * 配置后，收到语音消息时会自动调用 STT 服务转录为文字
    */
   stt?: STTChannelConfig;
+  /** TTS provider settings resolved from models.providers. */
+  tts?: TTSChannelConfig;
   /**
    * 单条消息最大处理时间（毫秒）。
    * 超时后 concurrencyGuard 会 abort 处理链（取消 LLM 调用、工具执行等），
@@ -242,6 +245,28 @@ export interface STTChannelConfig {
   apiKey?: string;
   /** STT 模型名称（默认 "whisper-1"） */
   model?: string;
+}
+
+/** TTS provider settings resolved from models.providers. */
+export interface TTSChannelConfig {
+  enabled?: boolean;
+  provider?: string;
+  baseUrl?: string;
+  endpoint?: string;
+  apiKey?: string;
+  model?: string;
+  voice?: string;
+  region?: string;
+  outputFormat?: string;
+  audioFormat?: string;
+  voiceSetting?: Record<string, unknown>;
+  audioSetting?: Record<string, unknown>;
+  languageBoost?: unknown;
+  pronunciationDict?: unknown;
+  voiceModify?: unknown;
+  subtitleEnable?: boolean;
+  timeoutMs?: number;
+  endpoints?: Array<{ region?: string; url?: string; endpoint?: string }> | Record<string, string>;
 }
 
 /**
@@ -540,5 +565,3 @@ export interface StreamMessageRequest {
   /** 同一条流式会话内的发送索引，从 0 开始，每次发送前递增；新流式会话重新从 0 开始 */
   index: number;
 }
-
-
