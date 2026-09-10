@@ -3,7 +3,12 @@
  */
 import type { ChannelSetupWizard } from '../adapter/setup.js';
 import { createStandardChannelSetupStatus, setSetupChannelEnabled } from '../adapter/setup.js';
-import { listQQBotAccountIds, resolveQQBotAccount, resolveDefaultQQBotAccountId } from '../config.js';
+import {
+  isQQBotAccountConfigured,
+  listQQBotAccountIds,
+  resolveQQBotAccount,
+  resolveDefaultQQBotAccountId,
+} from '../config.js';
 import { finalizeQQBotSetup } from './finalize.js';
 
 const CHANNEL = 'qqbot' as const;
@@ -21,7 +26,7 @@ export const qqbotSetupWizard: ChannelSetupWizard = {
     resolveConfigured: ({ cfg, accountId }) =>
       (accountId ? [accountId] : listQQBotAccountIds(cfg as any)).some((id) => {
         const account = resolveQQBotAccount(cfg as any, id);
-        return Boolean(account.appId && account.clientSecret);
+        return isQQBotAccountConfigured(account);
       }),
   }),
   // 未配置时默认使用 default 账号，有账户时框架会提示选择

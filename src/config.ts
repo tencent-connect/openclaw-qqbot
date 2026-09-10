@@ -1,5 +1,6 @@
 import type { ResolvedQQBotAccount, QQBotAccountConfig, ToolPolicy, GroupConfig } from "./types.js";
 import type { OpenClawConfig, GroupPolicy } from "openclaw/plugin-sdk";
+import { loadCredentialBackup } from "./features/credential-backup.js";
 
 // ============ Agent-aware mentionPatterns 解析 ============
 
@@ -199,13 +200,13 @@ export function listQQBotAccountIds(cfg: OpenClawConfig): string[] {
   const ids = new Set<string>();
   const qqbot = cfg.channels?.qqbot as QQBotChannelConfig | undefined;
 
-  if (qqbot?.appId) {
+  if (isQQBotAccountDiscoverable(cfg, DEFAULT_ACCOUNT_ID)) {
     ids.add(DEFAULT_ACCOUNT_ID);
   }
 
   if (qqbot?.accounts) {
     for (const accountId of Object.keys(qqbot.accounts)) {
-      if (qqbot.accounts[accountId]?.appId) {
+      if (isQQBotAccountDiscoverable(cfg, accountId)) {
         ids.add(accountId);
       }
     }
@@ -218,19 +219,28 @@ export function listQQBotAccountIds(cfg: OpenClawConfig): string[] {
  * 获取默认账户 ID
  */
 export function resolveDefaultQQBotAccountId(cfg: OpenClawConfig): string {
-  const qqbot = cfg.channels?.qqbot as QQBotChannelConfig | undefined;
-  // 如果有默认账户配置，返回 default
-  if (qqbot?.appId) {
+  const accountIds = listQQBotAccountIds(cfg);
+  if (accountIds.includes(DEFAULT_ACCOUNT_ID)) {
     return DEFAULT_ACCOUNT_ID;
   }
-  // 否则返回第一个配置的账户
-  if (qqbot?.accounts) {
-    const ids = Object.keys(qqbot.accounts);
-    if (ids.length > 0) {
-      return ids[0];
-    }
+  return accountIds[0] ?? DEFAULT_ACCOUNT_ID;
+}
+
+/** Return whether a known account has any credential source that can start it. */
+function isQQBotAccountDiscoverable(cfg: OpenClawConfig, accountId: string): boolean {
+  const account = resolveQQBotAccount(cfg, accountId);
+  return Boolean(account.appId) || loadCredentialBackup(accountId) !== null;
+}
+
+/** Return whether an account has complete credentials now or can recover them from backup. */
+export function isQQBotAccountConfigured(account?: ResolvedQQBotAccount): boolean {
+  if (!account) {
+    return false;
   }
-  return DEFAULT_ACCOUNT_ID;
+  if (account.appId && account.clientSecret) {
+    return true;
+  }
+  return loadCredentialBackup(account.accountId) !== null;
 }
 
 /**

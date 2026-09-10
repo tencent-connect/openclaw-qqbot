@@ -19,6 +19,7 @@ import {
   resolveQQBotAccount,
   applyQQBotAccountConfig,
   resolveDefaultQQBotAccountId,
+  isQQBotAccountConfigured,
   resolveRequireMention,
   resolveToolPolicy,
   resolveGroupConfig,
@@ -33,7 +34,6 @@ import { qqbotLogin, startQrLogin, waitQrLogin } from './setup/login.js';
 import { normalizeTarget, isQQBotTarget } from './outbound/target.js';
 import { sanitizeQQBotText } from './outbound/sanitize.js';
 import { startAccountWithCredentialRecovery, logoutAndClearCredentials, stopAccountGracefully } from './gateway/lifecycle.js';
-import { loadCredentialBackup } from './features/credential-backup.js';
 import { isApprovalPayload, approvalStubs } from './features/approval-utils.js';
 import { qqbotOnboardingAdapter } from './features/onboarding.js';
 import { stripMentionText } from './utils/mention.js';
@@ -119,15 +119,12 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
         cfg, sectionKey: 'qqbot', accountId,
         clearBaseFields: ['appId', 'clientSecret', 'clientSecretFile', 'name'],
       }),
-    isConfigured: (account) => {
-      if (account?.appId && account?.clientSecret) return true;
-      return loadCredentialBackup(account?.accountId) !== null;
-    },
+    isConfigured: (account) => isQQBotAccountConfigured(account),
     describeAccount: (account) => ({
       accountId: account?.accountId ?? DEFAULT_ACCOUNT_ID,
       name: account?.name,
       enabled: account?.enabled ?? false,
-      configured: Boolean(account?.appId && account?.clientSecret),
+      configured: isQQBotAccountConfigured(account),
       tokenSource: account?.secretSource,
     }),
     resolveAllowFrom: ({ cfg, accountId }: { cfg: OpenClawConfig; accountId?: string | null }) => {
@@ -306,7 +303,7 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
       accountId: account?.accountId ?? DEFAULT_ACCOUNT_ID,
       name: account?.name,
       enabled: account?.enabled ?? false,
-      configured: Boolean(account?.appId && account?.clientSecret),
+      configured: isQQBotAccountConfigured(account),
       tokenSource: account?.secretSource,
       running: Boolean(runtime?.running ?? false),
       connected: Boolean(runtime?.connected ?? false),
