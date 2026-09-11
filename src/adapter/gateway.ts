@@ -13,10 +13,27 @@ export interface ApprovalGatewayClient {
   request: (method: string, params: unknown) => Promise<unknown>;
 }
 
-/** 动态加载 gateway-runtime 模块，旧版框架不可用时返回 null */
-export function loadApprovalGatewayRuntime(): {
+type ApprovalGatewayRuntime = {
   createOperatorApprovalsGatewayClient: (...args: any[]) => Promise<ApprovalGatewayClient>;
-} | null {
+};
+
+/** Accept only modules that actually export the approvals factory (stale ESM builds often don't). */
+export function asApprovalGatewayRuntime(mod: unknown): ApprovalGatewayRuntime | null {
+  if (!mod || typeof mod !== "object") return null;
+  const record = mod as Record<string, unknown>;
+  const nested = record.default;
+  const candidates = [record, nested && typeof nested === "object" ? (nested as Record<string, unknown>) : null];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    if (typeof candidate.createOperatorApprovalsGatewayClient === "function") {
+      return candidate as ApprovalGatewayRuntime;
+    }
+  }
+  return null;
+}
+
+/** 动态加载 gateway-runtime 模块，旧版框架或缺少 factory 时返回 null */
+export function loadApprovalGatewayRuntime(): ApprovalGatewayRuntime | null {
   const req = createRequire(__filename);
   const pluginRoot = path.resolve(path.dirname(__filename), '..', '..');
   const fs = req('node:fs') as typeof import('node:fs');
@@ -25,7 +42,10 @@ export function loadApprovalGatewayRuntime(): {
     for (const rel of ['dist/plugin-sdk/gateway-runtime.js', 'plugin-sdk/gateway-runtime.js']) {
       const p = path.join(root, rel);
       try {
-        if (fs.existsSync(p)) return req(p);
+        if (fs.existsSync(p)) {
+          const runtime = asApprovalGatewayRuntime(req(p));
+          if (runtime) return runtime;
+        }
       } catch { /* try next */ }
     }
     return null;
