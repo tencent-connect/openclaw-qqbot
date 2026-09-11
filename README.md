@@ -57,6 +57,26 @@ Scan to join the QQ group chat
 
 > **Note:** This plugin serves as a **message channel** only — it relays messages between QQ and OpenClaw. Capabilities like image understanding, voice transcription, drawing, etc. depend on the **AI model** you configure and the **skills** installed in OpenClaw, not on this plugin itself.
 
+### X/Twitter Workflows With GetXAPI
+
+QQ Bot can be the chat surface while another OpenClaw plugin handles X/Twitter source tools. If your QQ group or private chat needs to search tweets, look up users, monitor tweets, or prepare approval-reviewed post tweets and replies, install a GetXAPI-backed skill beside this channel plugin. GetXAPI exposes a search endpoint at `GET https://api.getxapi.com/twitter/tweet/advanced_search` with Bearer-token auth.
+
+Keep the GetXAPI key in the source plugin's config, not in QQ Bot config. `tools.alsoAllow` is OpenClaw tool allowlisting: it additively enables the source tools for the QQ chats that should access X/Twitter automation. It does not change QQ Bot command approval. Keep `/bot-approve` in allowlist or strict mode so write-like actions still ask before execution.
+
+```json
+{
+  "tools": {
+    "alsoAllow": ["explore", "getxapi"]
+  }
+}
+```
+
+Useful QQ prompts after both plugins are running:
+
+- `@bot search tweets about "OpenClaw plugins" via GetXAPI and summarize accounts worth following.`
+- `@bot search tweet replies for this campaign URL and list objections we should answer.`
+- `@bot draft a reply to this tweet. Ask before posting it.`
+
 ### 💬 Quoted Message Context
 
 When a user quotes a message in QQ, the plugin automatically parses the quoted message content and injects it into the AI context, so the model clearly knows "which message the user is replying to" and gives more accurate responses. Supports text and media messages (image/voice/video/file), and works across devices.
