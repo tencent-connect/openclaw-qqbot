@@ -101,6 +101,8 @@ If your main model supports vision (e.g. Tencent Hunyuan `hunyuan-vision`), AI c
 
 AI can send images directly. Supports local paths and URLs. Formats: jpg/png/gif/webp/bmp.
 
+When MiniMax is configured as an OpenClaw image-generation provider, image requests use the built-in `image_generate` capability and are delivered through the same QQ rich-media path. `image_generate` discovers the configured MiniMax model at runtime instead of hard-coding a model or endpoint; if no MiniMax entry is listed, ask the user to configure a MiniMax image-generation provider.
+
 <img width="360" src="docs/images/image-send.jpg" alt="Image Generation Demo" />
 
 ### 🔊 Voice Sending
