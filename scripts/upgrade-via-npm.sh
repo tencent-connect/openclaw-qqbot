@@ -452,7 +452,7 @@ npm_pack_native_install() {
     ensure_valid_cwd
     local rc=0
     run_with_timeout "$INSTALL_TIMEOUT" "plugins install (local dir)" \
-        openclaw plugins install "$package_dir" $INSTALL_FORCE_FLAG $FORCE_UNSAFE_FLAG 2>&1 || rc=$?
+        openclaw plugins install "$package_dir" $INSTALL_FORCE_FLAG $FORCE_UNSAFE_FLAG $ACCEPT_CAPABILITIES_FLAG 2>&1 || rc=$?
 
     rm -rf "$extract_dir" 2>/dev/null || true
 
@@ -591,6 +591,13 @@ OPENCLAW_VERSION="$(openclaw --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+(\.
 INSTALL_FORCE_FLAG=""
 if [ -n "$OPENCLAW_VERSION" ] && version_gte "$OPENCLAW_VERSION" "2026.4.5"; then
     INSTALL_FORCE_FLAG="--force"
+fi
+
+# --accept-capabilities：2026.8.0 起引入 capability consent，
+#   插件在 openclaw.plugin.json 中声明的能力需显式同意，否则报 "requires capability consent"。
+ACCEPT_CAPABILITIES_FLAG=""
+if [ -n "$OPENCLAW_VERSION" ] && version_gte "$OPENCLAW_VERSION" "2026.8.0"; then
+    ACCEPT_CAPABILITIES_FLAG="--accept-capabilities"
 fi
 
 # --dangerously-force-unsafe-install：仅 2026.3.30 ~ 2026.6.1 内置安全扫描时代用于绕过扫描；
@@ -817,7 +824,7 @@ if [ "$USE_UPDATE" = "true" ]; then
     echo "  [Level 1] 尝试 openclaw plugins update...（${UPDATE_TIMEOUT}s 超时）"
     UPDATE_RC=0
     UPDATE_OUTPUT="$(run_with_timeout "$UPDATE_TIMEOUT" \
-        "plugins update" openclaw plugins update "$PLUGIN_ID" 2>&1)" || UPDATE_RC=$?
+        "plugins update" openclaw plugins update "$PLUGIN_ID" $ACCEPT_CAPABILITIES_FLAG 2>&1)" || UPDATE_RC=$?
     echo "$UPDATE_OUTPUT"
 
     if [ $UPDATE_RC -eq 0 ]; then
@@ -897,7 +904,7 @@ if [ "$UPGRADE_OK" != "true" ]; then
     RC=0
     run_with_timeout "$INSTALL_TIMEOUT" \
         "plugins install" openclaw plugins install "$INSTALL_SRC" --pin \
-        $INSTALL_FORCE_FLAG $FORCE_UNSAFE_FLAG 2>&1 || RC=$?
+        $INSTALL_FORCE_FLAG $FORCE_UNSAFE_FLAG $ACCEPT_CAPABILITIES_FLAG 2>&1 || RC=$?
 
     if [ $RC -eq 0 ] && [ -f "$EXTENSIONS_DIR/$PLUGIN_ID/package.json" ]; then
         mark_success; log "level1_install" "success" "  ✅ Level 1 install 成功" "method=install"

@@ -16,6 +16,7 @@ import { sendMedia } from './media-send.js';
 import type { MediaKind, SendResult } from './outbound-service.js';
 import type { DeliverDebouncer } from './debounce.js';
 import type { PluginLogger } from '../utils/plugin-logger.js';
+import { formatLogTextPreview } from '../utils/log-text-preview.js';
 import { isPathInAllowedRoots } from './local-file-router.js';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -96,7 +97,9 @@ export async function deliverReply(
   const mediaUrls = resolveMediaUrls(payload);
   const hasMedia = mediaUrls.length > 0;
 
-  ctx.log?.debug(`[text] textLen=${text.length} mediaCount=${mediaUrls.length}`);
+  ctx.log?.debug(
+    `[text] textLen=${text.length} mediaCount=${mediaUrls.length}${formatLogTextPreview(text)}`,
+  );
 
   // ── Layer 1: 语音意图 ──
   if (payload.audioAsVoice) {

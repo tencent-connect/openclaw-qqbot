@@ -71,7 +71,7 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
     media: true,
     reactions: false,
     threads: false,
-    blockStreaming: false,
+    blockStreaming: true,
   },
   gatewayMethods: ['web.login.start', 'web.login.wait'],
   reload: { configPrefixes: ['channels.qqbot'] },
