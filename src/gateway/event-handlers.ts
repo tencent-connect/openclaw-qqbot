@@ -13,6 +13,7 @@ import type { PluginLogger } from '../utils/plugin-logger.js';
 import { dispatchToOpenClaw } from '../dispatch/index.js';
 import { runWithRequestContext } from '../request-context.js';
 import { getApprovalHandler } from '../features/approval-handler.js';
+import { parseApprovalButtonData } from '../features/approval-utils.js';
 import { recordKnownUser } from '../features/proactive.js';
 import { cacheMsgId } from '../features/msgid-cache.js';
 import { getAdapters } from '../adapter/resolve.js';
@@ -156,7 +157,8 @@ async function handleApproval(
   try { await ack(event.id); } catch { /* ignore */ }
 
   const buttonData = event.data?.resolved?.button_data;
-  if (!buttonData?.startsWith('approve:')) return;
+  const approvalAction = parseApprovalButtonData(buttonData ?? '');
+  if (!approvalAction) return;
 
   // 身份授权校验：操作者需在 allowFrom 白名单中
   const operatorId = resolveOperatorId(event);
@@ -165,15 +167,12 @@ async function handleApproval(
     return;
   }
 
-  const parts = buttonData.split(':');
-  if (parts.length < 3) return;
-
   const handler = getApprovalHandler(account.accountId);
   if (!handler) return;
 
-  const approvalId = parts[1];
-  const decision = parts[2] as 'allow-once' | 'allow-always' | 'deny';
-  try { await handler.resolveApproval(approvalId, decision); } catch (err) {
+  try {
+    await handler.resolveApproval(approvalAction.approvalId, approvalAction.decision);
+  } catch (err) {
     log.error(`interaction approve error: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
