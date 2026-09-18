@@ -56,11 +56,31 @@ export function getHomeDir(): string {
 }
 
 /**
+ * 解析 OpenClaw 状态目录
+ *
+ * 优先级:
+ * 1. $OPENCLAW_STATE_DIR(以及历史名称 CLAWDBOT_STATE_DIR / MOLTBOT_STATE_DIR)
+ * 2. ~/.openclaw(默认)
+ *
+ * 与核心的状态目录迁移约定保持一致。用户通过 OPENCLAW_STATE_DIR 把状态目录
+ * 挪到其他位置时,插件必须在同一目录下存放数据,否则:
+ * - 核心会同时看到两个状态目录,doctor 报 "Multiple state directories detected"
+ * - 插件写入 ~/.openclaw 的文件会游离在核心的媒体白名单/会话历史之外
+ */
+export function getOpenClawStateDir(): string {
+  for (const key of ["OPENCLAW_STATE_DIR", "CLAWDBOT_STATE_DIR", "MOLTBOT_STATE_DIR"]) {
+    const value = process.env[key]?.trim();
+    if (value) return path.resolve(value);
+  }
+  return path.join(getHomeDir(), ".openclaw");
+}
+
+/**
  * 获取 .openclaw/qqbot 下的子目录路径，并自动创建
  * 替代各文件中分散的 path.join(HOME, ".openclaw", "qqbot", ...)
  */
 export function getQQBotDataDir(...subPaths: string[]): string {
-  const dir = path.join(getHomeDir(), ".openclaw", "qqbot", ...subPaths);
+  const dir = path.join(getOpenClawStateDir(), "qqbot", ...subPaths);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
@@ -71,13 +91,16 @@ export function getQQBotDataDir(...subPaths: string[]): string {
  * 获取 .openclaw/media/qqbot 下的子目录路径，并自动创建
  *
  * 与 getQQBotDataDir 不同，此目录位于 OpenClaw 核心的媒体安全白名单
- * (~/.openclaw/media) 之下，下载到这里的文件可以被框架的 image/media
+ * (<状态目录>/media) 之下，下载到这里的文件可以被框架的 image/media
  * 工具直接访问，不会触发 "Local media path is not under an allowed directory" 错误。
+ *
+ * 状态目录跟随 OPENCLAW_STATE_DIR 解析(见 getOpenClawStateDir),
+ * 保证自定义状态目录部署下,媒体文件仍落在核心白名单之内。
  *
  * 用于存放从 QQ 下载的图片、语音等需要被框架处理的媒体文件。
  */
 export function getQQBotMediaDir(...subPaths: string[]): string {
-  const dir = path.join(getHomeDir(), ".openclaw", "media", "qqbot", ...subPaths);
+  const dir = path.join(getOpenClawStateDir(), "media", "qqbot", ...subPaths);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
