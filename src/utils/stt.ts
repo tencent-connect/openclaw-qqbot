@@ -38,7 +38,7 @@ export function resolveSTTConfig(cfg: Record<string, unknown>): STTConfig | null
     const providerCfg = asRecord(providers?.[providerId]);
     const baseUrl = readString(sttCfg, 'baseUrl') ?? readString(providerCfg, 'baseUrl');
     const apiKey = readString(sttCfg, 'apiKey') ?? readString(providerCfg, 'apiKey');
-    const model = readString(sttCfg, 'model') ?? 'whisper-1';
+    const model = readString(sttCfg, 'model') ?? 'gpt-transcribe';
     if (baseUrl && apiKey) {
       return { enabled: true, baseUrl: baseUrl.replace(/\/+$/, ''), apiKey, model };
     }
@@ -55,7 +55,7 @@ export function resolveSTTConfig(cfg: Record<string, unknown>): STTConfig | null
     const providerCfg = asRecord(providers?.[providerId]);
     const baseUrl = readString(audioModelEntry, 'baseUrl') ?? readString(providerCfg, 'baseUrl');
     const apiKey = readString(audioModelEntry, 'apiKey') ?? readString(providerCfg, 'apiKey');
-    const model = readString(audioModelEntry, 'model') ?? 'whisper-1';
+    const model = readString(audioModelEntry, 'model') ?? 'gpt-transcribe';
     if (baseUrl && apiKey) {
       return { enabled: true, baseUrl: baseUrl.replace(/\/+$/, ''), apiKey, model };
     }

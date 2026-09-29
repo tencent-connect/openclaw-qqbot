@@ -240,7 +240,7 @@ export interface STTChannelConfig {
   baseUrl?: string;
   /** STT API 密钥 */
   apiKey?: string;
-  /** STT 模型名称（默认 "whisper-1"） */
+  /** STT 模型名称（默认 "gpt-transcribe"） */
   model?: string;
 }
 
