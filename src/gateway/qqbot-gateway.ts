@@ -25,6 +25,7 @@ import { buildUserAgent } from '../bot-instance.js';
 import { createPluginWebhookAdapter } from '../adapter/webhook.js';
 import { getPersistedRefIndexStore } from '../features/ref-index-store.js';
 import { getCachedMsgId } from '../features/msgid-cache.js';
+import { serializeStreamRequests } from '../outbound/stream-request-queue.js';
 
 export interface GatewayCallbacks {
   onReady?: () => void;
@@ -96,6 +97,7 @@ export class QQBotGateway {
     if (!runtime) {
       // Send-only：极简 QQBot 实例，仅 HTTP REST 发送
       this.bot = new QQBot({ ...baseBotOptions(account, this.log), tokenPrefetch: 'async' });
+      serializeStreamRequests(this.bot);
       return;
     }
 
@@ -114,6 +116,7 @@ export class QQBotGateway {
       tokenPrefetch: 'sync',
     });
 
+    serializeStreamRequests(this.bot);
     this.wrapBotSendForRefIndex();
 
     setupMiddlewares(this.bot, account, {

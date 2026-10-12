@@ -38,6 +38,7 @@
     "build": "tsup",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
+    "test:steering": "node scripts/test-steering.mjs",
     "lint:runtime": "npx tsx src/runtime-adapter/lint-runtime-access.ts"
   },
   "dependencies": {

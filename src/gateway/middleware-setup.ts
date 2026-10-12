@@ -2,15 +2,14 @@
  * SDK 中间件编排
  *
  * 根据账户配置组装 SDK 内置中间件链。
- * 中间件负责过滤和上下文富化；concurrencyGuard 负责串行+合并，
- * 合并后的消息继续走完剩余中间件链，最终统一由 bot.on("message") 处理转发。
+ * 中间件负责过滤和上下文富化；入站并发直接交给 OpenClaw Session Queue，
+ * 最终统一由 bot.on("message") 处理转发，不持有覆盖整个 Agent Run 的锁。
  */
-import type { QQBot, MiddlewareContext } from '@tencent-connect/qqbot-nodejs';
+import type { QQBot } from '@tencent-connect/qqbot-nodejs';
 import {
   messageFilter,
   contentSanitizer,
   rateLimiter,
-  concurrencyGuard,
   mentionGate,
   quoteRef,
   historyBuffer,
@@ -28,6 +27,7 @@ import { createPolicyInjector } from '../middleware/policy-injector.js';
 import { getHistoryStore, historyGroupKey } from '../features/history-store.js';
 import { dynamicAccessControl } from '../middleware/access-control.js';
 import { stripMentionText } from '../utils/mention.js';
+import { processingTimeout } from '../middleware/processing-timeout.js';
 
 export interface MiddlewareSetupOptions {
   /** 获取 runtime */
@@ -77,45 +77,14 @@ export function setupMiddlewares(bot: QQBot, account: ResolvedQQBotAccount, opts
   // 8. 三层限流（sender / group / global）
   bot.use(rateLimiter());
 
-  // 9. 斜杠命令（在并发锁之前，命令匹配后直接 reply + stop，不排队）
+  // 9. 插件斜杠命令：匹配后直接 reply + stop，不进入核心队列
   //    依赖：ctx.state.policy（policyInjector, #3）、ctx.message.*（原始消息）
-  //    注意：/stop 是框架级命令，不在 qqbot 命令列表中，仍由 urgentPredicate 处理
+  //    /stop、/steer 等框架级命令继续进入 OpenClaw 的入站命令路径
   const slash = slashCommand({ commands: buildCommandList(account, { getRuntime: opts.getRuntime }) });
   bot.use(slash.middleware);
 
-  // 10. 并发串行+合并（在副作用中间件之前）
-  //     - 同 peer 串行处理，避免平台 session conflict
-  //     - 处理中消息暂存 buffer；完成后合并为一条，继续走完剩余中间件链
-  //       （typingIndicator/quoteRef/attachmentProcessor/... 直到 bot.on("message")）
-  //     - 合并时清除 assembledBody 让 dispatch.ts 用合并后 content 重建
-  //     - 超时后 abort 处理链（取消 LLM 调用），释放锁并排空缓冲
-  bot.use(concurrencyGuard({
-    strategy: 'merge',
-    maxQueue: 50,
-    maxProcessingMs: account.processingTimeoutMs,
-    /** 紧急指令（/stop）跳过排队，立即处理 */
-    urgentPredicate: (ctx: MiddlewareContext) => {
-      return (ctx.message.content as string ?? '').trim() === '/stop';
-    },
-    onMerge: (buffered) => {
-      const last = buffered[buffered.length - 1];
-      if (buffered.length === 1) return last;
-
-      // 透传原始消息列表，格式拼接下沉给下游 envelopeFormatter / assembleBody
-      (last.state as Record<string, unknown>).mergedMessages = buffered;
-
-      // 合并附件（所有 buffer 中的附件汇总到 survivor）
-      const attachments = buffered.flatMap((c) => c.message.attachments ?? []);
-      if (attachments.length > 0) {
-        last.message.attachments = attachments;
-      }
-
-      // 清除 assembledBody，让 dispatch.ts 用合并后的 ctx 重新构建
-      delete (last.state as Record<string, unknown>).assembledBody;
-
-      return last;
-    },
-  }));
+  // 10. 每条请求独立计时；后续消息必须能在活跃 Run 期间到达核心 Steering 队列
+  bot.use(processingTimeout(account.processingTimeoutMs));
 
   // 11. C2C 输入状态指示器
   bot.use(typingIndicator());

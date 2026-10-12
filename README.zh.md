@@ -352,6 +352,22 @@ openclaw gateway restart
 
 ## ⚙️ 进阶配置
 
+### 任务执行中插话（Steering）
+
+使用 OpenClaw 的 `steer` 队列模式时，在同一个 QQ 会话中直接发送新消息即可调整正在执行的任务；`/steer <指令>` 可以为单条消息显式请求 Steering。正在执行的工具可能先完成，新指令随后生效。没有活跃任务时，普通消息正常开启新一轮。
+
+将以下设置合并到 `~/.openclaw/openclaw.json`：
+
+```json
+{
+  "messages": {
+    "queue": { "mode": "steer" }
+  }
+}
+```
+
+该全局设置也会作用于其他通道。OpenClaw 2026.10.1 的配置校验不接受 `messages.queue.byChannel.qqbot`。Steering 还取决于运行时能力；无法注入时，OpenClaw 可能回退为后续轮次。
+
 ### 多账户配置（Multi-Bot）
 
 支持在同一个 OpenClaw 实例下同时运行多个 QQ 机器人。

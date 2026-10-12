@@ -114,9 +114,20 @@ export function resolveRuntimeAdapters(
     ['channel', 'turn', 'run'],          // legacy (removed 2026-05-27)
   ]);
 
-  const dispatchReply = probeFunction(rt, [
+  const bufferedDispatchReply = probeFunction(rt, [
     ['channel', 'reply', 'dispatchReplyWithBufferedBlockDispatcher'],
   ]);
+  const queueAwareDispatch = probeFunction(rt, [
+    ['channel', 'reply', 'dispatchReplyFromConfig'],
+  ]);
+  // The buffered dispatcher defaults to a core entry that can wait for the
+  // active owner. The public channel entry resolves Steering before that wait.
+  const dispatchReply: RuntimeAdapters['dispatchReply'] = bufferedDispatchReply
+    ? (params) => bufferedDispatchReply({
+        ...params,
+        ...(queueAwareDispatch ? { dispatchReplyFromConfig: queueAwareDispatch } : {}),
+      })
+    : null;
 
   const resolveAgentRoute = probeFunction(rt, [
     ['channel', 'routing', 'resolveAgentRoute'],

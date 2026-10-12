@@ -355,6 +355,22 @@ Open QQ, find your bot, and send a message!
 
 ## ⚙️ Advanced Configuration
 
+### Steering During a Running Task
+
+With OpenClaw's `steer` queue mode, send another message in the same QQ conversation to adjust the active task. `/steer <instruction>` explicitly requests Steering for that message. An in-flight tool may finish before the new instruction takes effect; without an active run, ordinary messages start a new turn.
+
+Merge this setting into `~/.openclaw/openclaw.json`:
+
+```json
+{
+  "messages": {
+    "queue": { "mode": "steer" }
+  }
+}
+```
+
+This global setting also applies to other channels. On OpenClaw 2026.10.1, `messages.queue.byChannel.qqbot` is not accepted by the config schema. Steering also depends on runtime support; OpenClaw may fall back to a follow-up turn when injection is unavailable.
+
 ### Multi-Account Setup (Multi-Bot)
 
 Run multiple QQ bots under a single OpenClaw instance.
