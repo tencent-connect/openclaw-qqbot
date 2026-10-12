@@ -38,6 +38,8 @@ Scan to join the QQ group chat
 |---------|-------------|
 | 🔒 **Multi-Scene** | C2C private chat, group chat (@mention / autonomous dual mode) |
 | 👥 **Group Fine-Tuning** | Per-group @trigger rules, tool policies, custom prompts, message filtering |
+WebSocket disconnections are reflected in channel status while the SDK reconnects. If recovery is exhausted, the account exits with an error so OpenClaw can restart it. READY or RESUMED clears the previous error.
+
 | 🌐 **Dual Transport** | WebSocket (default) or Webhook (HTTP callback) — switch via config |
 | 🖼️ **Rich Media** | Send & receive images, voice, video, and files |
 | 🎙️ **Voice (STT/TTS)** | Speech-to-text transcription & text-to-speech replies |

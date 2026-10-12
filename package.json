@@ -38,7 +38,8 @@
     "build": "tsup",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
-    "lint:runtime": "npx tsx src/runtime-adapter/lint-runtime-access.ts"
+    "lint:runtime": "npx tsx src/runtime-adapter/lint-runtime-access.ts",
+    "test:gateway": "vitest run tests/gateway-lifecycle.test.ts tests/gateway-transport.test.ts"
   },
   "dependencies": {
     "@tencent-connect/qqbot-connector": "1.2.0",
@@ -46,8 +47,11 @@
   },
   "devDependencies": {
     "@types/node": "^20.19.43",
+    "@types/ws": "^8.18.1",
     "tsup": "^8.5.1",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.10",
+    "ws": "^8.21.3"
   },
   "peerDependencies": {
     "@tencent-connect/qqbot-connector": "1.2.0",

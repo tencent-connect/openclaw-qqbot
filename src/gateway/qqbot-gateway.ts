@@ -29,6 +29,7 @@ import { getCachedMsgId } from '../features/msgid-cache.js';
 export interface GatewayCallbacks {
   onReady?: () => void;
   onError?: (error: Error) => void;
+  onDisconnected?: (event: { code: number; reason: string }) => void;
 }
 
 export interface SendOptions {
@@ -134,6 +135,8 @@ export class QQBotGateway {
     this.bot.on(`ready`, handleReady);
     this.bot.on(`resumed`, handleReady);
 
+
+    this.bot.on('disconnected', (event) => callbacks?.onDisconnected?.(event));
 
     this.bot.on('error', (err: Error) => {
       this.log.error(`Gateway error: ${err.message}`);

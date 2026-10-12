@@ -290,6 +290,7 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
       running: false,
       connected: false,
       lastConnectedAt: null,
+      lastDisconnect: null,
       lastError: null,
       lastInboundAt: null,
       lastOutboundAt: null,
@@ -300,6 +301,7 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
       running: snapshot.running ?? false,
       connected: snapshot.connected ?? false,
       lastConnectedAt: snapshot.lastConnectedAt ?? null,
+      lastDisconnect: snapshot.lastDisconnect ?? null,
       lastError: snapshot.lastError ?? null,
     }),
     buildAccountSnapshot: ({ account, runtime }) => ({
@@ -311,6 +313,7 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
       running: Boolean(runtime?.running ?? false),
       connected: Boolean(runtime?.connected ?? false),
       lastConnectedAt: runtime?.lastConnectedAt ?? null,
+      lastDisconnect: runtime?.lastDisconnect ?? null,
       lastError: runtime?.lastError ?? null,
       lastInboundAt: runtime?.lastInboundAt ?? null,
       lastOutboundAt: runtime?.lastOutboundAt ?? null,

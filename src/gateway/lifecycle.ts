@@ -71,29 +71,58 @@ export async function startAccountWithCredentialRecovery(ctx: StartAccountContex
   const gw = new QQBotGateway(account, runtime, log);
   registerGateway(account.accountId, gw);
 
-  await gw.start(
-    {
-      onReady: () => {
-        saveCredentialBackup(account.accountId, account.appId, account.clientSecret);
-        ctx.setStatus({
-          ...ctx.getStatus(),
-          running: true,
-          connected: true,
-          lastConnectedAt: Date.now(),
-            });
+  const isCurrent = () => getGateway(account.accountId) === gw && !abortSignal?.aborted;
+  let features: Promise<void> | undefined;
+  try {
+    await gw.start(
+      {
+        onReady: () => {
+          if (!isCurrent()) return;
+          saveCredentialBackup(account.accountId, account.appId, account.clientSecret);
+          ctx.setStatus({
+            ...ctx.getStatus(),
+            running: true,
+            connected: true,
+            lastConnectedAt: Date.now(),
+            lastError: null,
+          });
 
-        // ── Features 初始化（gateway ready 后触发）──
-        initFeatures(account, cfg, log).catch((e) => {
-          log?.error(`[qqbot:${account.accountId}] initFeatures error: ${e}`);
-            });
+          // Features belong to this account lifetime, not each WebSocket resume.
+          features ??= initFeatures(account, cfg, log).catch((e) => {
+            log.error(`[qqbot:${account.accountId}] initFeatures error: ${e}`);
+          });
+        },
+        onDisconnected: ({ code, reason }) => {
+          if (!isCurrent()) return;
+          const error = `WebSocket closed: ${code}${reason ? ` ${reason}` : ''}`;
+          ctx.setStatus({
+            ...ctx.getStatus(),
+            connected: false,
+            lastDisconnect: { at: Date.now(), error },
+          });
+        },
+        onError: (error) => {
+          if (!isCurrent()) return;
+          log.error(`[qqbot:${account.accountId}] Gateway error: ${error.message}`);
+          ctx.setStatus({ ...ctx.getStatus(), lastError: error.message });
+        },
       },
-      onError: (error) => {
-        log?.error(`[qqbot:${account.accountId}] Gateway error: ${error.message}`);
-        ctx.setStatus({ ...ctx.getStatus(), lastError: error.message });
-      },
-    },
-    abortSignal,
-  );
+      abortSignal,
+    );
+  } catch (error) {
+    if (getGateway(account.accountId) === gw) {
+      ctx.setStatus({ ...ctx.getStatus(), lastError: error instanceof Error ? error.message : String(error) });
+    }
+    throw error;
+  } finally {
+    if (getGateway(account.accountId) === gw) {
+      ctx.setStatus({ ...ctx.getStatus(), running: false, connected: false });
+      await features;
+      if (getGateway(account.accountId) === gw) {
+        await stopAccountGracefully({ accountId: account.accountId, log });
+      }
+    }
+  }
 }
 
 /**
@@ -126,15 +155,8 @@ async function initFeatures(account: ResolvedQQBotAccount, cfg: any, log: Plugin
 }
 
 /**
- * 停止账户 — 主动调用，与 abort 信号双保险。
- *
- * 框架先 abort.abort() 让 startAccount promise 自然 resolve，
- * 再调用 stopAccount 给插件机会做主动清理（关 WebSocket、注销处理器、刷新持久化）。
- *
- * 实现策略：
- *   1. 主动调用 bot.stop() — 比 abort 信号更立刻、不依赖事件循环时机
- *   2. 注销 approval handler / gateway
- *   3. 立即返回；剩余资源（typing keepalive 定时器等）由 abort 信号触发收尾
+ * Stop the registered account, also used when the SDK lifecycle exits.
+ * Detach its resources before awaiting cleanup so a replacement remains registered.
  */
 export async function stopAccountGracefully(params: {
   accountId: string;
@@ -142,8 +164,10 @@ export async function stopAccountGracefully(params: {
 }): Promise<void> {
   const { accountId, log } = params;
   const gw = getGateway(accountId);
-
-  // 1. 主动停止 bot
+  const handler = getApprovalHandler(accountId);
+  // Release ownership before awaiting cleanup so an old stop cannot remove a replacement.
+  unregisterGateway(accountId);
+  unregisterApprovalHandler(accountId);
   if (gw) {
     try {
       await gw.stop();
@@ -152,14 +176,10 @@ export async function stopAccountGracefully(params: {
       log?.error(`[qqbot:${accountId}] gateway stop error: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-
-  unregisterGateway(accountId);
   try {
-    const h = getApprovalHandler(accountId);
-    if (h) await h.stop();
+    await handler?.stop();
   } catch {
   }
-  unregisterApprovalHandler(accountId);
 }
 
 /**
