@@ -10,6 +10,7 @@
 
 import type { PluginRuntime } from 'openclaw/plugin-sdk';
 import type { PluginLogger } from '../utils/plugin-logger.js';
+import { getOpenClawStateDir } from '../utils/platform.js';
 
 // ── 类型 ──
 
@@ -316,11 +317,12 @@ export async function persistAuthConfig(
     return;
   }
 
-  // 最后兜底：裸写文件
-  const { homedir } = await import('node:os');
+  // 最后兜底：裸写文件（状态目录按 OPENCLAW_STATE_DIR 解析，见 utils/platform）
   const { join } = await import('node:path');
-  const { writeFileSync } = await import('node:fs');
-  writeFileSync(join(homedir(), '.openclaw', 'openclaw.json'), JSON.stringify(cfg, null, 2) + '\n', 'utf-8');
+  const { writeFileSync, mkdirSync } = await import('node:fs');
+  const configFile = join(getOpenClawStateDir(), 'openclaw.json');
+  mkdirSync(getOpenClawStateDir(), { recursive: true });
+  writeFileSync(configFile, JSON.stringify(cfg, null, 2) + '\n', 'utf-8');
 }
 
 /**

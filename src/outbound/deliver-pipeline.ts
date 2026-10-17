@@ -17,6 +17,7 @@ import type { MediaKind, SendResult } from './outbound-service.js';
 import type { DeliverDebouncer } from './debounce.js';
 import type { PluginLogger } from '../utils/plugin-logger.js';
 import { formatLogTextPreview } from '../utils/log-text-preview.js';
+import { getOpenClawStateDir } from '../utils/platform.js';
 import { isPathInAllowedRoots } from './local-file-router.js';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -226,13 +227,11 @@ async function handleVoiceIntent(text: string, ctx: DeliverContext): Promise<boo
 
 // ── TTS 路径安全 ──
 
-const TTS_ALLOWED_ROOTS = [
-  path.join(os.homedir(), '.openclaw'),
-  os.tmpdir(),
-  '/tmp',
-];
+function getTtsAllowedRoots(): string[] {
+  return [getOpenClawStateDir(), os.tmpdir(), '/tmp'];
+}
 
 function isTtsPathSafe(audioPath: string): boolean {
   if (!path.isAbsolute(audioPath)) return false;
-  return isPathInAllowedRoots(audioPath, TTS_ALLOWED_ROOTS);
+  return isPathInAllowedRoots(audioPath, getTtsAllowedRoots());
 }

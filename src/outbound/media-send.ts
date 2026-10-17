@@ -18,6 +18,7 @@ import type { ReplyTarget } from '@tencent-connect/qqbot-nodejs';
 import type { QQBotGateway } from '../gateway/index.js';
 import { tryGetQQBotRuntime } from '../runtime.js';
 import { getAdapters } from '../adapter/resolve.js';
+import { getOpenClawStateDir } from '../utils/platform.js';
 import type { PluginLogger } from '../utils/plugin-logger.js';
 import { validateRemoteUrl } from '../utils/ssrf-guard.js';
 import { getGateway } from './outbound-service.js';
@@ -86,7 +87,8 @@ function resolveTempRoots(): string[] {
  */
 function buildDynamicAllowedRoots(workspaceDir?: string): string[] {
   const home = os.homedir();
-  const derivedBase = workspaceDir ? path.dirname(workspaceDir) : path.join(home, '.openclaw');
+  const stateDir = getOpenClawStateDir();
+  const derivedBase = workspaceDir ? path.dirname(workspaceDir) : stateDir;
   const roots: string[] = [];
   const added = new Set<string>();
 
@@ -100,8 +102,8 @@ function buildDynamicAllowedRoots(workspaceDir?: string): string[] {
     } catch { /* skip */ }
   };
 
-  // 已知配置目录名（包括默认和开发模式）
-  const knownBases = [path.join(home, '.openclaw'), path.join(home, '.openclaw-dev')];
+  // 已知配置目录名（状态目录按环境变量解析，另保留默认和开发模式以向后兼容）
+  const knownBases = [stateDir, path.join(home, '.openclaw'), path.join(home, '.openclaw-dev')];
 
   // 当前配置目录优先（从 workspaceDir 反推）
   if (workspaceDir) {
