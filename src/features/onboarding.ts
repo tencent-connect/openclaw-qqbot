@@ -8,7 +8,12 @@ import type {
   ChannelOnboardingAdapter,
   OpenClawConfig,
 } from 'openclaw/plugin-sdk';
-import { DEFAULT_ACCOUNT_ID, listQQBotAccountIds, resolveQQBotAccount } from '../config.js';
+import {
+  DEFAULT_ACCOUNT_ID,
+  isQQBotAccountConfigured,
+  listQQBotAccountIds,
+  resolveQQBotAccount,
+} from '../config.js';
 
 /**
  * Onboarding adapter — 导出给 ChannelPlugin 使用
@@ -25,7 +30,7 @@ export const qqbotOnboardingAdapter: ChannelOnboardingAdapter = {
     }
     const firstAccount = resolveQQBotAccount(cfg, accountIds[0]);
     return {
-      configured: Boolean(firstAccount.appId && firstAccount.clientSecret),
+      configured: isQQBotAccountConfigured(firstAccount),
       accountCount: accountIds.length,
       defaultAccountId: accountIds[0],
     };
