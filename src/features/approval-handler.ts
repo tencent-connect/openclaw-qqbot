@@ -15,6 +15,7 @@ import type { PluginLogger } from '../utils/plugin-logger.js';
 import type { InlineKeyboard, KeyboardButton } from "../types.js";
 
 import { loadApprovalGatewayRuntime, type ApprovalGatewayClient } from '../adapter/gateway.js';
+import { resolveTarget } from './approval-utils.js';
 type EventFrame = {
   event: string;
   payload: unknown;
@@ -170,20 +171,6 @@ function buildApprovalKeyboard(approvalId: string): InlineKeyboard {
   };
 }
 
-/** 从 sessionKey 或 turnSourceTo 提取投递目标 */
-function resolveTarget(
-  sessionKey: string | null | undefined,
-  turnSourceTo: string | null | undefined
-): { type: "c2c" | "group"; id: string } | null {
-  // 优先从 sessionKey 解析（如 agent:main:qqbot:direct:OPENID）
-  const sk = sessionKey ?? turnSourceTo;
-  if (!sk) return null;
-  const m = sk.match(/qqbot:(c2c|direct|group):([A-F0-9]+)/i);
-  if (!m) return null;
-  const type = m[1]!.toLowerCase() === "group" ? "group" : "c2c";
-  return { type, id: m[2]! };
-}
-
 // ─── Handler 类 ──────────────────────────────────────────────
 
 export class QQBotApprovalHandler {
@@ -337,7 +324,7 @@ export class QQBotApprovalHandler {
     const turnSourceTo = (request.request as any).turnSourceTo;
     const target = resolveTarget(sessionKey, turnSourceTo);
     if (!target) {
-      log?.info(`[qqbot:${accountId}] approval-handler: no QQ target for ${shortId} (session=${sessionKey})`);
+      log?.warn(`[qqbot:${accountId}] approval-handler: no QQ target for ${shortId} (session=${sessionKey}, turn=${turnSourceTo})`);
       return;
     }
 
