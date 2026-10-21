@@ -13,6 +13,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk";
 import { getBotForAccount } from "../bot-instance.js";
 import type { PluginLogger } from '../utils/plugin-logger.js';
 import type { InlineKeyboard, KeyboardButton } from "../types.js";
+import { buildApprovalButtonData, type ApprovalDecision } from './approval-utils.js';
 
 import { loadApprovalGatewayRuntime, type ApprovalGatewayClient } from '../adapter/gateway.js';
 type EventFrame = {
@@ -160,9 +161,9 @@ function buildApprovalKeyboard(approvalId: string): InlineKeyboard {
       rows: [
         {
           buttons: [
-            makeBtn("allow",  "✅ 允许一次", "已允许",    `approve:${approvalId}:allow-once`,  1),
-            makeBtn("always", "⭐ 始终允许", "已始终允许", `approve:${approvalId}:allow-always`, 1),
-            makeBtn("deny",   "❌ 拒绝",     "已拒绝",    `approve:${approvalId}:deny`,         0),
+            makeBtn("allow",  "✅ 允许一次", "已允许",    buildApprovalButtonData(approvalId, "allow-once"),  1),
+            makeBtn("always", "⭐ 始终允许", "已始终允许", buildApprovalButtonData(approvalId, "allow-always"), 1),
+            makeBtn("deny",   "❌ 拒绝",     "已拒绝",    buildApprovalButtonData(approvalId, "deny"),         0),
           ],
         },
       ],
@@ -261,7 +262,7 @@ export class QQBotApprovalHandler {
   /** 解析审批请求（供 Interaction 回调或 /approve 命令调用） */
   async resolveApproval(
     approvalId: string,
-    decision: "allow-once" | "allow-always" | "deny"
+    decision: ApprovalDecision
   ): Promise<boolean> {
     if (!this.gatewayClient) {
       this.opts.log?.warn(`[qqbot:${this.opts.accountId}] approval-handler: resolve ignored ${approvalId} → gatewayClient not ready`);
