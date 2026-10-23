@@ -9,3 +9,4 @@ openclaw.json
 *.tgz
 *.log
 pnpm-lock.yaml
+tests/.*.cjs

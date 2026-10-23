@@ -222,6 +222,8 @@ function buildDynamicCtx(
     lines.push(`- Images: ${processed.imageUrls.join(', ')}`);
   }
 
+  if (processed?.contextImageInfo) lines.push(processed.contextImageInfo);
+
   // Voice：从 transcripts 行存投影出 paths + urls，去重后拼接
   const transcripts = processed?.transcripts ?? [];
   const voiceRefs = unique([

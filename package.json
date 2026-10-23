@@ -38,7 +38,8 @@
     "build": "tsup",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
-    "lint:runtime": "npx tsx src/runtime-adapter/lint-runtime-access.ts"
+    "lint:runtime": "npx tsx src/runtime-adapter/lint-runtime-access.ts",
+    "test:qq-fixes": "node tests/run-qq-fixes.cjs"
   },
   "dependencies": {
     "@tencent-connect/qqbot-connector": "1.2.0",

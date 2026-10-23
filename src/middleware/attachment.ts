@@ -9,7 +9,7 @@
  * 插入位置：envelopeFormatter 之前
  */
 import * as path from 'node:path';
-import type { MiddlewareContext } from '@tencent-connect/qqbot-nodejs';
+import type { RefIndexStore, MiddlewareContext } from '@tencent-connect/qqbot-nodejs';
 import {
   convertSilkToWav,
   isVoiceAttachment,
@@ -18,6 +18,7 @@ import type { MessageAttachment } from '../types.js';
 import { transcribeAudio, resolveSTTConfig } from '../utils/stt.js';
 import { formatVoiceText, formatDuration, type VoiceTranscript, type TranscriptSource } from '../utils/voice-text.js';
 import { downloadRemoteMedia } from '../adapter/media.js';
+import { collectContextImages } from './media-context.js';
 import { getAdapters } from '../adapter/resolve.js';
 
 export { formatVoiceText, formatDuration };
@@ -25,6 +26,7 @@ export type { VoiceTranscript, TranscriptSource };
 
 /** 处理后的附件结果（写入 ctx.state.processedAttachments） */
 export interface ProcessedAttachments {
+  contextImageInfo?: string;
   voiceText: string;
   imageUrls: string[];
   otherInfo: string;
@@ -38,6 +40,7 @@ export interface ProcessedAttachments {
 }
 
 interface AttachmentMiddlewareOptions {
+  refStore?: RefIndexStore;
   /** 获取 runtime */
   getRuntime: () => any;
 }
@@ -52,13 +55,25 @@ export function attachmentProcessor(opts: AttachmentMiddlewareOptions) {
     const msg = ctx.message;
     const attachments = msg.attachments as MessageAttachment[] | undefined;
 
-    if (attachments?.length) {
+    const contextImages = opts.refStore ? await collectContextImages(ctx, opts.refStore) : [];
+    if (attachments?.length || contextImages.length) {
       const runtime = opts.getRuntime();
       const adapters = getAdapters(runtime);
       const cfg = (adapters.getConfig?.() ?? {}) as Record<string, unknown>;
-      const log = ctx.log;
-      const result = await processAttachments(attachments, cfg, log);
-
+      const [result, contextResults] = await Promise.all([
+        processAttachments(attachments ?? [], cfg, ctx.log),
+        Promise.all(contextImages.map(({ attachment }) => processAttachments([attachment], cfg, ctx.log))),
+      ]);
+      const labels: string[] = [];
+      for (const [index, { label }] of contextImages.entries()) {
+        const image = contextResults[index]!;
+        result.imageUrls.push(...image.imageUrls);
+        result.localMediaPaths.push(...image.localMediaPaths);
+        result.localMediaTypes.push(...image.localMediaTypes);
+        result.remoteMediaUrls.push(...image.remoteMediaUrls);
+        labels.push(`${label}: ${image.imageUrls.join(', ')}`);
+      }
+      result.contextImageInfo = labels.join('\n');
       if (result.voiceText || result.imageUrls.length > 0 || result.otherInfo || result.localMediaPaths.length > 0) {
         ctx.state.processedAttachments = result;
       }
@@ -72,6 +87,7 @@ export function attachmentProcessor(opts: AttachmentMiddlewareOptions) {
 
 type Log = { info: (m: string) => void; error: (m: string) => void; debug?: (m: string) => void };
 
+/** Download/process attachments in parallel and retain their original media order. */
 async function processAttachments(
   attachments: MessageAttachment[],
   cfg: Record<string, unknown>,
@@ -94,7 +110,7 @@ async function processAttachments(
     const url = normalizeUrl(att.url);
 
     if (isImage && url) {
-      const localPath = await downloadMediaFile(url, att.filename, log);
+      const localPath = await downloadMediaFile(url, att.filename, log, true);
       return { type: 'image' as const, localPath, url, contentType: att.content_type ?? 'image/png' };
     }
 
@@ -286,10 +302,12 @@ function normalizeUrl(url: string | undefined): string {
   return url.startsWith('//') ? `https:${url}` : url;
 }
 
+/** Download HTTPS media with an image-specific budget; preserve URL fallback on failure. */
 async function downloadMediaFile(
   url: string,
   filename?: string,
   log?: Log,
+  image = false,
 ): Promise<string | null> {
   // 仅允许 HTTPS（安全策略）
   if (!url.startsWith('https://')) {
@@ -302,8 +320,8 @@ async function downloadMediaFile(
       url,
       subdir: 'qqbot/downloads',
       originalFilename: filename,
-      maxBytes: 500 * 1024 * 1024,
-      timeoutMs: 120_000,
+      maxBytes: (image ? 20 : 500) * 1024 * 1024,
+      timeoutMs: image ? 15_000 : 120_000,
     });
     log?.debug?.(`Downloaded: ${result.path}`);
     return result.path;

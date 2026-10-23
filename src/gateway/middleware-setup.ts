@@ -13,7 +13,6 @@ import {
   concurrencyGuard,
   mentionGate,
   quoteRef,
-  historyBuffer,
   envelopeFormatter,
   typingIndicator,
   slashCommand,
@@ -27,6 +26,7 @@ import { getPersistedRefIndexStore } from '../features/ref-index-store.js';
 import { createPolicyInjector } from '../middleware/policy-injector.js';
 import { getHistoryStore, historyGroupKey } from '../features/history-store.js';
 import { dynamicAccessControl } from '../middleware/access-control.js';
+import { mediaHistoryBuffer, enrichMediaRef } from '../middleware/media-context.js';
 import { stripMentionText } from '../utils/mention.js';
 
 export interface MiddlewareSetupOptions {
@@ -48,22 +48,14 @@ export function setupMiddlewares(bot: QQBot, account: ResolvedQQBotAccount, opts
   //    后续 dynamicAccessControl / mentionGate / historyBuffer 自动读取
   bot.use(createPolicyInjector(account));
 
-  // 4. 群历史缓冲 — 放在门控之前，确保所有消息（含未 @bot）都计入上下文
-  //    limit 从 ctx.state.policy.group.historyLimit 读取，key 带 accountId 前缀隔离多账号
-  bot.use(historyBuffer({
-    store: getHistoryStore(),
-    groupKey: (ctx) => {
-      const gid = ctx.message.groupOpenid;
-      if (ctx.message.kind !== 'group' || !gid) return undefined;
-      return historyGroupKey(account.accountId, gid);
-    },
+  // Authorize before recording media or reply references.
+  bot.use(dynamicAccessControl({ accountId: account.accountId, getRuntime: opts.getRuntime }));
+  bot.use(mediaHistoryBuffer(getHistoryStore(), (ctx) => {
+    const gid = ctx.message.groupOpenid;
+    return ctx.message.kind === 'group' && gid ? historyGroupKey(account.accountId, gid) : undefined;
   }));
-
-  // 5. 动态访问控制 — 从 ctx.state.policy 动态读取，支持 pairing
-  bot.use(dynamicAccessControl({
-    accountId: account.accountId,
-    getRuntime: opts.getRuntime,
-  }));
+  // Record unmentioned images too, so a later quote can recover their URL.
+  bot.use(quoteRef({ store: getPersistedRefIndexStore(account.accountId), enrichEntry: enrichMediaRef }));
 
   // 6. 群聊 @bot 门控（从 ctx.state.policy.group 读取动态配置）
   bot.use(mentionGate());
@@ -120,13 +112,8 @@ export function setupMiddlewares(bot: QQBot, account: ResolvedQQBotAccount, opts
   // 11. C2C 输入状态指示器
   bot.use(typingIndicator());
 
-  // 12. 引用消息解析（默认优先 msg_elements 获取文件名等丰富信息）
-  bot.use(quoteRef({
-    store: getPersistedRefIndexStore(account.accountId),
-  }));
-
   // 13. 附件处理（语音 STT 转录 + 图片/文件下载）
-  bot.use(attachmentProcessor({ getRuntime: opts.getRuntime }));
+  bot.use(attachmentProcessor({ getRuntime: opts.getRuntime, refStore: getPersistedRefIndexStore(account.accountId) }));
 
   // 14. 上下文组装（构建框架规约的 body）
   bot.use(envelopeFormatter({
