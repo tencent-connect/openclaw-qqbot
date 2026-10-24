@@ -28,8 +28,6 @@ function installExitHooksOnce(): void {
   };
 
   process.on('beforeExit', flush);
-  process.on('SIGINT', () => { flush(); process.exit(0); });
-  process.on('SIGTERM', () => { flush(); process.exit(0); });
 }
 
 export function getQQBotRuntime(): PluginRuntime {

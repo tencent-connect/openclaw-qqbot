@@ -162,6 +162,12 @@ declare module "openclaw/plugin-sdk" {
     registerChannel<TAccount = unknown>(options: { plugin: ChannelPlugin<TAccount> }): void;
     /** 注册工具 */
     registerTool(tool: AnyAgentTool, opts?: ToolRegistrationOptions): void;
+    /** 注册由宿主管理启停的后台服务 */
+    registerService(service: {
+      id: string;
+      start: () => void | Promise<void>;
+      stop?: () => void | Promise<void>;
+    }): void;
     /** 其他 API 方法 */
     [key: string]: unknown;
   }
