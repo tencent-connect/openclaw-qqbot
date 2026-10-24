@@ -178,6 +178,12 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
     },
   },
 
+  // ── message 工具声明（OpenClaw 9.8+ 群聊 message_tool_only 必需）──
+  agentPrompt: {
+    messageToolHints: ({ cfg, accountId }) => ['send'],
+    messageToolCapabilities: ({ cfg, accountId }) => ['delivery-pin'],
+  },
+
   // ── 出站 ──
   outbound: {
     deliveryMode: 'direct' as const,

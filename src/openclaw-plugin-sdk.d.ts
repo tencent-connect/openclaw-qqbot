@@ -433,6 +433,23 @@ declare module "openclaw/plugin-sdk" {
   /**
    * 频道插件接口（泛型）
    */
+  /**
+   * 消息工具提示适配器
+   * 对齐 openclaw/plugin-sdk 的 ChannelAgentPromptAdapter
+   */
+  export interface ChannelAgentPromptAdapter {
+    /** message 工具的可用能力名（如 send） */
+    messageToolHints?: (params: {
+      cfg: OpenClawConfig;
+      accountId?: string | null;
+    }) => string[];
+    /** message 工具的投递能力（如 delivery-pin） */
+    messageToolCapabilities?: (params: {
+      cfg: OpenClawConfig;
+      accountId?: string | null;
+    }) => string[] | undefined;
+  }
+
   export interface ChannelPlugin<TAccount = unknown> {
     /** 插件 ID */
     id: string;
@@ -442,6 +459,8 @@ declare module "openclaw/plugin-sdk" {
     version?: string;
     /** 插件能力 */
     capabilities?: ChannelPluginCapabilities;
+    /** 消息工具提示适配器 */
+    agentPrompt?: ChannelAgentPromptAdapter;
     /** 重载配置 */
     reload?: { configPrefixes?: string[] };
     /** Onboarding 适配器 */
