@@ -27,6 +27,7 @@ import { getPersistedRefIndexStore } from '../features/ref-index-store.js';
 import { createPolicyInjector } from '../middleware/policy-injector.js';
 import { getHistoryStore, historyGroupKey } from '../features/history-store.js';
 import { dynamicAccessControl } from '../middleware/access-control.js';
+import { rememberReplyReferences } from '../features/reply-reference.js';
 import { stripMentionText } from '../utils/mention.js';
 
 export interface MiddlewareSetupOptions {
@@ -64,6 +65,8 @@ export function setupMiddlewares(bot: QQBot, account: ResolvedQQBotAccount, opts
     accountId: account.accountId,
     getRuntime: opts.getRuntime,
   }));
+
+  bot.use(rememberReplyReferences(account.accountId));
 
   // 6. 群聊 @bot 门控（从 ctx.state.policy.group 读取动态配置）
   bot.use(mentionGate());
