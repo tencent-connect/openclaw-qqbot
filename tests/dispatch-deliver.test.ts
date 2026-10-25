@@ -45,12 +45,32 @@ function createLogSpy(): { log: PluginLogger; lines: string[] } {
   return { log: sink, lines };
 }
 
-function createStreamOwner(overrides: Partial<StreamTextOwner> = {}): StreamTextOwner & { finalized: number } {
+function createStreamOwner(overrides: Partial<StreamTextOwner> = {}): StreamTextOwner & {
+  finalized: number;
+  finalText: string;
+  fallbackReasons: string[];
+} {
   const owner = {
     hasStarted: false,
     shouldFallbackToStatic: false,
     isTerminal: false,
     finalized: 0,
+    finalText: '',
+    fallbackReasons: [] as string[],
+    // 气泡实际展示的正文（流真正把全文推上去时才会非空）
+    displayedBodyText: '',
+    // 最后一段真正推送到流的文本
+    lastStreamedText: '',
+    // 正文是否已由兜底路径发出
+    bodyDelivered: false,
+    // deliver 层在 finalize 前把回合最终正文交给流
+    setFinalText(text: string) {
+      owner.finalText = text;
+    },
+    // 正文兜底：流未真正展示完整正文时补发
+    async sendFinalBodyIfNeeded(reason: string) {
+      owner.fallbackReasons.push(reason);
+    },
     async finalize() {
       owner.finalized += 1;
       owner.isTerminal = true;
@@ -197,6 +217,17 @@ await test('kind=final finalizes the stream and skips static text', async () => 
   const { state, replies } = createState({ streamingController: stream });
   await deliverDispatchPayload({ text: 'done' }, { kind: 'final' }, state);
   assert.equal(stream.finalized, 1);
+  assert.deepEqual(replies, []);
+});
+
+await test('kind=final hands the final body to the stream instead of duplicating it', async () => {
+  const stream = createStreamOwner({ hasStarted: true });
+  const { state, replies } = createState({ streamingController: stream });
+  await deliverDispatchPayload({ text: 'the whole body' }, { kind: 'final' }, state);
+  // 正文交给流，由流决定如何展示（气泡已含全文时不再静态重发）
+  assert.equal(stream.finalText, 'the whole body');
+  assert.equal(stream.finalized, 1);
+  // 投递层不自己再发一份静态正文
   assert.deepEqual(replies, []);
 });
 

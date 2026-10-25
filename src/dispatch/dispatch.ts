@@ -112,7 +112,7 @@ export async function dispatchToOpenClaw(
   );
 
   const streamingController = streamingEnabled
-    ? createStreamingController(envelope, account, log?.child('streaming'))
+    ? createStreamingController(envelope, account, log?.child('streaming'), (body) => deliverCtx.sendText(deliverCtx.qualifiedTarget, body))
     : null;
 
   if (streamingController) {
@@ -134,6 +134,7 @@ export async function dispatchToOpenClaw(
     deliveredTexts,
     log: dlog,
     deliverReply,
+    pendingMidText: '',
   };
 
   if (!adapters.inboundRun) {
@@ -221,6 +222,7 @@ function createStreamingController(
   envelope: ReturnType<typeof buildEnvelope>,
   account: ResolvedQQBotAccount,
   log?: PluginLogger,
+  sendFallback?: (body: string) => Promise<{ error?: string } | undefined>,
 ): StreamingController | null {
   const gw = getGateway(account.accountId);
   if (!gw) {
@@ -236,6 +238,7 @@ function createStreamingController(
     },
     accountId: account.accountId,
     replyToId: envelope.messageId,
+    sendFallback,
     log,
   });
 }
