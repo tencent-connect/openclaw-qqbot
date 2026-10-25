@@ -37,6 +37,7 @@ import { loadCredentialBackup } from './features/credential-backup.js';
 import { isApprovalPayload, approvalStubs } from './features/approval-utils.js';
 import { qqbotOnboardingAdapter } from './features/onboarding.js';
 import { stripMentionText } from './utils/mention.js';
+import { shouldSuppressQQBotSend } from './utils/silent-reply.js';
 
 /** QQ Bot 单条消息文本长度上限 */
 export const TEXT_CHUNK_LIMIT = 5000;
@@ -55,6 +56,7 @@ const GFM_TABLE_SEP_RE = /^\|[\s:-]+\|/;
 function isGfmTableLine(line: string): boolean {
   return GFM_TABLE_DATA_RE.test(line) || GFM_TABLE_SEP_RE.test(line);
 }
+
 
 export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
   id: 'qqbot',
@@ -232,6 +234,15 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
     sendText: async ({ to, text, accountId, replyToId, cfg }) => {
       const account = resolveQQBotAccount(cfg, accountId ?? undefined);
       const outLog = createOutLog(account.accountId);
+      // 静默回复（NO_REPLY / HEARTBEAT_OK）和「投递失败提示」整条本身不应真的发到 QQ。
+      // 直接返回成功，避免 message_tool_only 模式下 runtime 判定「没有可见交付」而反复重投。
+      // 提示语必须整条匹配：只做子串匹配会把「回复里提到这句文案」的正常回复整条丢弃。
+      if (shouldSuppressQQBotSend(text)) {
+        outLog.info(
+          `[qqbot] suppressed (silent/delivery-notice): ${JSON.stringify(text).slice(0, 80)} to=${to} replyTo=${replyToId ?? '-'}`,
+        );
+        return { channel: 'qqbot', messageId: '' };
+      }
       outLog.debug(`sendText to=${to} len=${text.length} replyTo=${replyToId ?? '-'}`);
       const result = await sendText({ to, text, accountId, replyToId, account });
       if (result.error) throw new Error(result.error);

@@ -72,8 +72,14 @@ export function createQqbotReplyOptions(params: {
     ...createMonitoredAgentEventHandlers(eventLog),
     ...(streamingController
       ? {
-          onPartialReply: async (payload: { text?: string }): Promise<ProgressResult> => {
-            const text = payload.text ?? '';
+          onPartialReply: async (payload: {
+            text?: string;
+            delta?: string;
+          }): Promise<ProgressResult> => {
+            // 核心的 PartialReplyPayload 同时带 text 与 delta（见 openclaw 的
+            // PartialReplyPayload = Pick<ReplyPayload, 'text' | 'mediaUrls'> & { delta?: string }）。
+            // 只读 text 会把仅通过 delta 送达的部分正文整段丢掉。
+            const text = payload.text ?? payload.delta ?? '';
             eventLog?.debug(`onPartialReply textLen=${text.length}`);
             if (!text) return false;
             await streamingController.onPartialReply(text);
