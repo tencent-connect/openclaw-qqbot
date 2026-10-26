@@ -89,7 +89,13 @@ export function setupMiddlewares(bot: QQBot, account: ResolvedQQBotAccount, opts
   //       （typingIndicator/quoteRef/attachmentProcessor/... 直到 bot.on("message")）
   //     - 合并时清除 assembledBody 让 dispatch.ts 用合并后 content 重建
   //     - 超时后 abort 处理链（取消 LLM 调用），释放锁并排空缓冲
-  bot.use(concurrencyGuard({
+  //
+  //     ⚠️ 私聊（c2c）不套这层：OpenClaw 侧 messages.queue.mode=steer 要求新消息在上一轮
+  //     run 还在跑时就抵达核心，核心才会把它注入活跃 run。merge 策略会把消息压在 buffer 里、
+  //     等 run 结束后才放行，核心永远看到 isActive=false，steer 因此从不触发，表现为
+  //     “补充要求被攒到这一轮结束才响应”。
+  //     群聊保持 merge：核心对 room event 本就不做 steer，合并还能减少平台侧冲突。
+  const guard = concurrencyGuard({
     strategy: 'merge',
     maxQueue: 50,
     maxProcessingMs: account.processingTimeoutMs,
@@ -115,7 +121,14 @@ export function setupMiddlewares(bot: QQBot, account: ResolvedQQBotAccount, opts
 
       return last;
     },
-  }));
+  });
+  bot.use(async (ctx, next) => {
+    if (ctx.message.replyTarget.scope === 'c2c') {
+      await next();
+      return;
+    }
+    await guard(ctx, next);
+  });
 
   // 11. C2C 输入状态指示器
   bot.use(typingIndicator());
