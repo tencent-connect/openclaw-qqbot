@@ -52,6 +52,26 @@
 
 > **说明：** 本插件仅作为**消息通道**，负责在 QQ 和 OpenClaw 之间传递消息。图片理解、语音转录、AI 画图等能力取决于你配置的 **AI 模型**以及在 OpenClaw 中安装的 **skill**，而非插件本身提供。
 
+### 搭配 GetXAPI 处理 X/Twitter 工作流
+
+QQ Bot 可以作为聊天入口，X/Twitter 的具体来源工具交给其他 OpenClaw 插件处理。如果你的 QQ 群聊或私聊需要搜索推文、查询用户、监控推文，或在审批后发布推文和回复，可以在本通道插件旁边安装一个 GetXAPI 后端的 skill。GetXAPI 的搜索接口为 `GET https://api.getxapi.com/twitter/tweet/advanced_search`，使用 Bearer token 鉴权。
+
+把 GetXAPI key 保存在源插件的配置中，不要写入 QQ Bot 配置。`tools.alsoAllow` 是 OpenClaw 的工具白名单配置，只会为需要访问 X/Twitter 能力的 QQ 会话额外开放对应工具，不会改变 QQ Bot 的命令审批策略。继续用 `/bot-approve` 保持白名单或严格模式，让写入类动作在执行前仍然请求确认。
+
+```json
+{
+  "tools": {
+    "alsoAllow": ["explore", "getxapi"]
+  }
+}
+```
+
+两个插件都运行后，可以在 QQ 中这样使用：
+
+- `@bot 用 GetXAPI 搜索 "OpenClaw plugins" 相关推文，总结值得关注的账号。`
+- `@bot 搜索这个活动链接的推文回复，列出我们需要回应的异议。`
+- `@bot 起草一条回复这条推文的内容，发布前先请求确认。`
+
 ### 💬 引用消息上下文
 
 用户在 QQ 中引用某条消息发送时，插件会自动解析被引用的消息内容并注入 AI 上下文，让模型清楚地知道"用户在回复哪条消息"，从而给出更准确的回复。支持文本及媒体消息（图片/语音/视频/文件），换设备后同样可用。
