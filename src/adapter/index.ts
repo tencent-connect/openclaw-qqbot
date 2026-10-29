@@ -12,4 +12,4 @@
 
 export { verifyRuntimeContract, type ContractResult } from './contract.js';
 export { resolveRuntimeAdapters, getAdapters, type RuntimeAdapters } from './resolve.js';
-export { loadApprovalGatewayRuntime, type ApprovalGatewayClient } from './gateway.js';
+export { loadApprovalGatewayRuntime, asApprovalGatewayRuntime, type ApprovalGatewayClient } from './gateway.js';
