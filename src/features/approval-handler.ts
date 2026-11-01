@@ -137,7 +137,10 @@ function buildPluginApprovalText(request: PluginApprovalRequest): string {
  * click_limit=1 → 每人只能点一次
  * permission.type=2 → 所有人可操作
  */
-function buildApprovalKeyboard(approvalId: string): InlineKeyboard {
+function buildApprovalKeyboard(
+  approvalId: string,
+  allowedDecisions?: readonly string[] | null
+): InlineKeyboard {
   const makeBtn = (
     id: string,
     label: string,
@@ -155,14 +158,18 @@ function buildApprovalKeyboard(approvalId: string): InlineKeyboard {
     },
     group_id: "approval",
   });
+  // 核心在 request.allowedDecisions 中声明该请求实际支持的决策；渲染不在集合内的
+  // 按钮只会让用户点了必失败。字段缺失时维持原三按钮行为。
+  const can = (decision: string) =>
+    !allowedDecisions || allowedDecisions.includes(decision);
   return {
     content: {
       rows: [
         {
           buttons: [
-            makeBtn("allow",  "✅ 允许一次", "已允许",    `approve:${approvalId}:allow-once`,  1),
-            makeBtn("always", "⭐ 始终允许", "已始终允许", `approve:${approvalId}:allow-always`, 1),
-            makeBtn("deny",   "❌ 拒绝",     "已拒绝",    `approve:${approvalId}:deny`,         0),
+            ...(can("allow-once") ? [makeBtn("allow", "✅ 允许一次", "已允许", `approve:${approvalId}:allow-once`, 1)] : []),
+            ...(can("allow-always") ? [makeBtn("always", "⭐ 始终允许", "已始终允许", `approve:${approvalId}:allow-always`, 1)] : []),
+            ...(can("deny") ? [makeBtn("deny", "❌ 拒绝", "已拒绝", `approve:${approvalId}:deny`, 0)] : []),
           ],
         },
       ],
@@ -355,7 +362,12 @@ export class QQBotApprovalHandler {
       ? buildPluginApprovalText(request as PluginApprovalRequest)
       : buildExecApprovalText(request as ExecApprovalRequest);
 
-    const keyboard = buildApprovalKeyboard(request.id);
+    const keyboard = buildApprovalKeyboard(
+      request.id,
+      Array.isArray(request.request?.allowedDecisions)
+        ? request.request.allowedDecisions as string[]
+        : null
+    );
 
     const timeoutMs = kind === "plugin"
       ? ((request as PluginApprovalRequest).request.timeoutMs ?? 120_000)
