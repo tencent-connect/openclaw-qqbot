@@ -11,6 +11,7 @@ import type { ResolvedQQBotAccount } from '../types.js';
 import { parseTarget } from './target.js';
 import { ReplyLimiter } from './reply-limiter.js';
 import { isInvalidMsgIdError } from './msgid-error.js';
+import { clearMsgIdCache } from '../features/msgid-cache.js';
 
 // ── Gateway + Limiter 注册表（生命周期由 channel.ts 管理）──
 
@@ -45,6 +46,20 @@ function expireMsgId(replyToId: string | undefined, accountId: string): void {
 }
 
 /**
+ * 失效的 msg_id 会同时留在 msgid-cache 里，网关发送时会自动回填。
+ * 只清 limiter 不清缓存，重发仍会带上同一个失效 ID，降级逻辑等于没生效。
+ */
+function expireCachedMsgId(to: string | undefined): void {
+  if (!to) return;
+  try {
+    const target = parseTarget(to);
+    clearMsgIdCache(target.scope, target.targetId);
+  } catch {
+    // target 解析失败时不影响主流程
+  }
+}
+
+/**
  * 发送并处理被动回复 msg_id 失效。
  *
  * QQ 的 msg_id 只在 5 分钟内有效，超时或额度用尽后平台会直接拒绝。
@@ -55,7 +70,8 @@ function expireMsgId(replyToId: string | undefined, accountId: string): void {
 async function sendWithMsgIdFallback<T>(
   replyToId: string | undefined,
   accountId: string,
-  send: (msgId: string | undefined) => Promise<T>,
+  send: (msgId: string | null | undefined) => Promise<T>,
+  to?: string,
 ): Promise<T> {
   const msgId = resolveMsgId(replyToId, accountId);
   try {
@@ -63,7 +79,9 @@ async function sendWithMsgIdFallback<T>(
   } catch (err) {
     if (!msgId || !isInvalidMsgIdError(err)) throw err;
     expireMsgId(replyToId, accountId);
-    return await send(undefined);
+    // 必须同时清缓存并显式传 null：否则 attachMsgId 会把同一个失效 ID 回填回来。
+    expireCachedMsgId(to);
+    return await send(null);
   }
 }
 
@@ -124,7 +142,7 @@ export async function sendText(params: {
   try {
     const target = parseTarget(params.to);
     const result = await sendWithMsgIdFallback(params.replyToId, accountId, (msgId) =>
-      gw.sendText(target, params.text, { msgId }));
+      gw.sendText(target, params.text, { msgId }), params.to);
     return { messageId: result.id };
   } catch (err: unknown) { return formatError(err); }
 }
@@ -156,7 +174,7 @@ export async function sendMedia(params: {
       }
       const fileType = MEDIA_KIND_TO_FILE_TYPE[kind];
       return gw.sendMedia(target, params.mediaUrl, { text: params.text, msgId, fileType });
-    });
+    }, params.to);
     return { messageId: result.id };
   } catch (err: unknown) { return formatError(err); }
 }
@@ -173,7 +191,7 @@ export async function sendVoice(params: {
   try {
     const target = parseTarget(params.to);
     const result = await sendWithMsgIdFallback(params.replyToId, accountId, (msgId) =>
-      gw.sendVoice(target, params.source, { msgId }));
+      gw.sendVoice(target, params.source, { msgId }), params.to);
     return { messageId: result.id };
   } catch (err: unknown) { return formatError(err); }
 }
@@ -190,7 +208,7 @@ export async function sendVideo(params: {
   try {
     const target = parseTarget(params.to);
     const result = await sendWithMsgIdFallback(params.replyToId, accountId, (msgId) =>
-      gw.sendVideo(target, params.videoUrl, { msgId }));
+      gw.sendVideo(target, params.videoUrl, { msgId }), params.to);
     return { messageId: result.id };
   } catch (err: unknown) { return formatError(err); }
 }
@@ -204,7 +222,7 @@ export class OutboundService {
     try {
       const target = parseTarget(to);
       const result = await sendWithMsgIdFallback(msgId, this.accountId, (resolvedMsgId) =>
-        this.gw.sendText(target, text, { msgId: resolvedMsgId }));
+        this.gw.sendText(target, text, { msgId: resolvedMsgId }), to);
       return { messageId: result.id };
     } catch (err: unknown) { return formatError(err); }
   }

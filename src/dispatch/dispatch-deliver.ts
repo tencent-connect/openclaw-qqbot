@@ -86,7 +86,16 @@ export async function deliverDispatchPayload(
 
   if (kind === 'block') {
     if (payload.audioAsVoice) {
-      await sendReply(payload, info, state.ctx);
+      // 语音同样要占账本：语音失败后回退文本时，第二次派发不能重发同一段
+      const voiceClaim = text ? claimText(state, text) : null;
+      if (text && !voiceClaim) return;
+      try {
+        await sendReply(payload, info, state.ctx);
+      } catch (err) {
+        if (voiceClaim) releaseText(state, text, voiceClaim);
+        throw err;
+      }
+      if (voiceClaim) confirmText(state, text, voiceClaim);
       if (text) state.deliveredTexts.add(text);
       return;
     }
@@ -120,7 +129,7 @@ export async function deliverDispatchPayload(
   // 带媒体的 final 也要参与文本去重：只跳过重复字幕，媒体仍要发。
   let textToSend = text;
   let claim: string | null = null;
-  if (text && !payload.audioAsVoice) {
+  if (text) {
     if (state.deliveredTexts.has(text)) {
       textToSend = '';
     } else {

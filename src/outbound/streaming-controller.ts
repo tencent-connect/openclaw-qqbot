@@ -70,6 +70,9 @@ export class StreamingController {
   /** 串行队列 */
   private chain: Promise<unknown> = Promise.resolve();
 
+  /** abort 后拒绝再开新会话（等锁期间在途 chunk 不能再建 session） */
+  private aborted = false;
+
   constructor(private readonly deps: StreamingControllerDeps) {}
 
   // ── 公共访问器 ──
@@ -93,6 +96,7 @@ export class StreamingController {
   // ── 入口 ──
 
   onPartialReply(text: string): Promise<void> {
+    if (this.aborted) return Promise.resolve();
     this._hasStarted = true; // 同步置位：不等异步发送，final 就能感知流式已启动
     this.chain = this.chain.then(() => this.handleChunk(text)).catch((err) => {
       this.deps.log?.error(`onPartialReply error: ${err instanceof Error ? err.message : String(err)}`);
@@ -115,6 +119,8 @@ export class StreamingController {
   async abort(reason?: string): Promise<void> {
     if (this.isTerminal) return;
     this.deps.log?.warn(`aborting stream reason=${reason ?? 'manual'} sent=${this.sentChunkCount}`);
+    // 先置位再等锁：等锁窗口内的 chunk 不能开新 session，否则会留下一个没人收尾的流
+    this.aborted = true;
     const session = this.session;
     this.session = null;
     if (session) {
@@ -130,7 +136,7 @@ export class StreamingController {
   // ── 核心逻辑 ──
 
   private async handleChunk(text: string): Promise<void> {
-    if (this.isTerminal || !text) return;
+    if (this.isTerminal || this.aborted || !text) return;
 
     // 正常续写：新文本前缀匹配（含空白归一化）
     if (prefixMatches(this.lastAcceptedFull, text)) {
@@ -149,7 +155,8 @@ export class StreamingController {
     // 前缀不匹配 — 长度回退 → 新回复（工具调用后）
     if (text.length < this.lastAcceptedFull.length) {
       this.deps.log?.info(`new reply: lastAccepted=${this.lastAcceptedFull.length}→chunk=${text.length}`);
-      await this.completeSession('new_reply');
+      // 换会话也要进 target 锁：否则另一个控制器的 finalize 会与本条 complete 重叠
+      await withTargetFinalizeLock(finalizeLockKey(this.deps), () => this.completeSession('new_reply'));
       this.lastAcceptedFull = '';
       await this.sendUpdate(text);
       return;
@@ -187,6 +194,7 @@ export class StreamingController {
   // ── QQ 交互 ──
 
   private async sendUpdate(text: string): Promise<void> {
+    if (this.aborted) return;
     if (!this.session) {
       this.session = this.deps.gateway.openStream(this.deps.target, this.deps.replyToId);
       this.transition('streaming', 'first_chunk');
