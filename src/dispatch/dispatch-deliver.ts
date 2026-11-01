@@ -6,7 +6,7 @@
  * kind=final 与已发 block 去重；流占用时收尾后跳过静态文本。
  */
 import type { PluginLogger } from '../utils/plugin-logger.js';
-import { confirmOutboundSend, releaseOutboundSend, reserveOutboundSend } from './send-ledger.js';
+import { confirmOutboundSend, releaseOutboundSend, reserveOutboundSend, type OutboundKind } from './send-ledger.js';
 import { formatLogTextPreview } from '../utils/log-text-preview.js';
 import type {
   DeliverContext,
@@ -44,9 +44,9 @@ export function streamOwnsText(controller: StreamTextOwner | null): boolean {
  * 跨派发去重：同一入站消息的同一段文本只发一次。
  * @returns token 表示这段文本归你发；null 表示已经发过，调用方应直接 return。
  */
-function claimText(state: DispatchDeliverState, text: string): string | null {
+function claimText(state: DispatchDeliverState, text: string, kind: OutboundKind = 'text'): string | null {
   if (!text) return null;
-  const token = reserveOutboundSend(state.ctx.accountId, state.inboundMessageId ?? state.ctx.replyToId, text);
+  const token = reserveOutboundSend(state.ctx.accountId, state.inboundMessageId ?? state.ctx.replyToId, text, Date.now(), kind);
   if (!token) {
     state.log?.warn(
       `send-ledger dropping duplicate delivery inbound=${state.inboundMessageId ?? state.ctx.replyToId ?? '-'} textLen=${text.length}`,
@@ -56,14 +56,14 @@ function claimText(state: DispatchDeliverState, text: string): string | null {
 }
 
 /** 发送成功才保留这段文本的去重占位；失败立刻撤销，让重试还能再发一次。 */
-function confirmText(state: DispatchDeliverState, text: string, token: string): void {
+function confirmText(state: DispatchDeliverState, text: string, token: string, kind: OutboundKind = 'text'): void {
   if (!text) return;
-  confirmOutboundSend(state.ctx.accountId, state.inboundMessageId ?? state.ctx.replyToId, text, token);
+  confirmOutboundSend(state.ctx.accountId, state.inboundMessageId ?? state.ctx.replyToId, text, token, Date.now(), kind);
 }
 
-function releaseText(state: DispatchDeliverState, text: string, token: string): void {
+function releaseText(state: DispatchDeliverState, text: string, token: string, kind: OutboundKind = 'text'): void {
   if (!text) return;
-  releaseOutboundSend(state.ctx.accountId, state.inboundMessageId ?? state.ctx.replyToId, text, token);
+  releaseOutboundSend(state.ctx.accountId, state.inboundMessageId ?? state.ctx.replyToId, text, token, kind);
 }
 
 export async function deliverDispatchPayload(
@@ -86,16 +86,19 @@ export async function deliverDispatchPayload(
 
   if (kind === 'block') {
     if (payload.audioAsVoice) {
-      // 语音同样要占账本：语音失败后回退文本时，第二次派发不能重发同一段
-      const voiceClaim = text ? claimText(state, text) : null;
-      if (text && !voiceClaim) return;
+      // 语音单独记账：文本块发过同样文字，不代表语音也发过（TTS 仍需要这段文字）
+      const voiceClaim = text ? claimText(state, text, 'voice') : null;
+      const duplicated = !!text && !voiceClaim;
+      // 重复语音只去字幕，媒体/附件照发；什么都没有才整体丢弃
+      if (duplicated && !hasMedia && countAttachments(payload) === 0) return;
+      const voicePayload = duplicated ? { ...payload, text: undefined } : payload;
       try {
-        await sendReply(payload, info, state.ctx);
+        await sendReply(voicePayload, info, state.ctx);
       } catch (err) {
-        if (voiceClaim) releaseText(state, text, voiceClaim);
+        if (voiceClaim) releaseText(state, text, voiceClaim, 'voice');
         throw err;
       }
-      if (voiceClaim) confirmText(state, text, voiceClaim);
+      if (voiceClaim) confirmText(state, text, voiceClaim, 'voice');
       if (text) state.deliveredTexts.add(text);
       return;
     }
@@ -127,10 +130,17 @@ export async function deliverDispatchPayload(
   }
 
   // 带媒体的 final 也要参与文本去重：只跳过重复字幕，媒体仍要发。
+  // 语音 payload 例外：即使文本已作为普通消息发出，TTS 仍需要这段文字，
+  // 否则语音永远发不出去；重复文本由 suppressTextFallback 在 TTS 失败时挡住。
   let textToSend = text;
   let claim: string | null = null;
+  let suppressTextFallback = false;
   if (text) {
-    if (state.deliveredTexts.has(text)) {
+    if (payload.audioAsVoice) {
+      claim = claimText(state, text, 'voice');
+      if (!claim) textToSend = '';
+      suppressTextFallback = state.deliveredTexts.has(text);
+    } else if (state.deliveredTexts.has(text)) {
       textToSend = '';
     } else {
       claim = claimText(state, text);
@@ -140,23 +150,21 @@ export async function deliverDispatchPayload(
 
   const filteredPayload = filterDeliveredMedia(payload, state.deliveredMediaUrls);
   const payloadToSend = textToSend
-    ? filteredPayload
+    ? (suppressTextFallback ? { ...filteredPayload, suppressTextFallback: true } : filteredPayload)
     : { ...filteredPayload, text: undefined };
 
   // attachments 不在 mediaUrl/mediaUrls 里，不能因为 hasMedia=false 就丢掉纯附件回复。
-  const attachments = (payload as { attachments?: unknown }).attachments;
-  const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
-  if (!textToSend && !hasMedia && !hasAttachments && !payload.audioAsVoice) {
+  if (!textToSend && !hasMedia && countAttachments(payload) === 0 && !payload.audioAsVoice) {
     return;
   }
 
   try {
     await sendReply(payloadToSend, info, state.ctx);
   } catch (err) {
-    if (claim) releaseText(state, text, claim);
+    if (claim) releaseText(state, text, claim, payload.audioAsVoice ? 'voice' : 'text');
     throw err;
   }
-  if (claim) confirmText(state, text, claim);
+  if (claim) confirmText(state, text, claim, payload.audioAsVoice ? 'voice' : 'text');
   if (textToSend) state.deliveredTexts.add(textToSend);
   for (const u of payloadToSend.mediaUrls ?? []) state.deliveredMediaUrls.add(u);
   if (payloadToSend.mediaUrl) state.deliveredMediaUrls.add(payloadToSend.mediaUrl);
@@ -172,6 +180,11 @@ export async function deliverDispatchPayloadSafe(
   } catch (err) {
     state.log?.error(`deliver error: ${err instanceof Error ? err.message : String(err)}`);
   }
+}
+
+function countAttachments(payload: DeliverPayload): number {
+  const attachments = (payload as { attachments?: unknown }).attachments;
+  return Array.isArray(attachments) ? attachments.length : 0;
 }
 
 async function forwardMediaUrls(

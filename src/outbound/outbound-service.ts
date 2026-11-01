@@ -28,14 +28,19 @@ function getLimiter(accountId: string): ReplyLimiter {
 }
 
 /**
- * 解析 replyToId：超出被动回复限额时自动降级为主动消息（不传 msgId）。
- * @returns 实际使用的 msgId（超限时为 undefined）
+ * 解析 replyToId：超出被动回复限额时自动降级为主动消息。
+ * @returns
+ *   - 非空字符串：用这个 msgId 走被动回复
+ *   - null：调用方明确要求主动消息（限额/TTL 用尽），不能再用缓存回填
+ *   - undefined：本就没有 replyToId，允许网关按缓存挑一条最近的
  */
-function resolveMsgId(replyToId: string | undefined, accountId: string): string | undefined {
+function resolveMsgId(replyToId: string | undefined, accountId: string): string | null | undefined {
   if (!replyToId) return undefined;
   const limiter = getLimiter(accountId);
   const result = limiter.checkLimit(replyToId);
-  if (!result.allowed) return undefined;
+  // 限额用尽：必须显式 null，否则 attachMsgId 会把缓存里的旧 msg_id 塞回来，
+  // 发送失败后又会因为 msgId 已解析而拿不到重试机会。
+  if (!result.allowed) return null;
   limiter.record(replyToId);
   return replyToId;
 }
@@ -68,10 +73,10 @@ function expireCachedMsgId(to: string | undefined): void {
  * 进而给用户发 "couldn't confirm whether my previous reply reached this chat"。
  */
 async function sendWithMsgIdFallback<T>(
+  to: string,
   replyToId: string | undefined,
   accountId: string,
   send: (msgId: string | null | undefined) => Promise<T>,
-  to?: string,
 ): Promise<T> {
   const msgId = resolveMsgId(replyToId, accountId);
   try {
@@ -141,8 +146,8 @@ export async function sendText(params: {
   const gw = getOrCreateGateway(params.account);
   try {
     const target = parseTarget(params.to);
-    const result = await sendWithMsgIdFallback(params.replyToId, accountId, (msgId) =>
-      gw.sendText(target, params.text, { msgId }), params.to);
+    const result = await sendWithMsgIdFallback(params.to, params.replyToId, accountId, (msgId) =>
+      gw.sendText(target, params.text, { msgId }));
     return { messageId: result.id };
   } catch (err: unknown) { return formatError(err); }
 }
@@ -161,7 +166,7 @@ export async function sendMedia(params: {
   try {
     const target = parseTarget(params.to);
     const kind = params.mediaKind ?? 'image';
-    const result = await sendWithMsgIdFallback(params.replyToId, accountId, (msgId) => {
+    const result = await sendWithMsgIdFallback(params.to, params.replyToId, accountId, (msgId) => {
       if (kind === 'voice') {
         const source = resolveVoiceSource(params.mediaUrl);
         return gw.sendVoice(target, source, { text: params.text, msgId });
@@ -174,7 +179,7 @@ export async function sendMedia(params: {
       }
       const fileType = MEDIA_KIND_TO_FILE_TYPE[kind];
       return gw.sendMedia(target, params.mediaUrl, { text: params.text, msgId, fileType });
-    }, params.to);
+    });
     return { messageId: result.id };
   } catch (err: unknown) { return formatError(err); }
 }
@@ -190,8 +195,8 @@ export async function sendVoice(params: {
   const gw = getOrCreateGateway(params.account);
   try {
     const target = parseTarget(params.to);
-    const result = await sendWithMsgIdFallback(params.replyToId, accountId, (msgId) =>
-      gw.sendVoice(target, params.source, { msgId }), params.to);
+    const result = await sendWithMsgIdFallback(params.to, params.replyToId, accountId, (msgId) =>
+      gw.sendVoice(target, params.source, { msgId }));
     return { messageId: result.id };
   } catch (err: unknown) { return formatError(err); }
 }
@@ -207,8 +212,8 @@ export async function sendVideo(params: {
   const gw = getOrCreateGateway(params.account);
   try {
     const target = parseTarget(params.to);
-    const result = await sendWithMsgIdFallback(params.replyToId, accountId, (msgId) =>
-      gw.sendVideo(target, params.videoUrl, { msgId }), params.to);
+    const result = await sendWithMsgIdFallback(params.to, params.replyToId, accountId, (msgId) =>
+      gw.sendVideo(target, params.videoUrl, { msgId }));
     return { messageId: result.id };
   } catch (err: unknown) { return formatError(err); }
 }
@@ -221,8 +226,8 @@ export class OutboundService {
   async sendText(to: string, text: string, msgId?: string): Promise<SendResult> {
     try {
       const target = parseTarget(to);
-      const result = await sendWithMsgIdFallback(msgId, this.accountId, (resolvedMsgId) =>
-        this.gw.sendText(target, text, { msgId: resolvedMsgId }), to);
+      const result = await sendWithMsgIdFallback(to, msgId, this.accountId, (resolvedMsgId) =>
+        this.gw.sendText(target, text, { msgId: resolvedMsgId }));
       return { messageId: result.id };
     } catch (err: unknown) { return formatError(err); }
   }
@@ -231,7 +236,7 @@ export class OutboundService {
     try {
       const target = parseTarget(to);
       const kind = opts?.mediaKind ?? 'image';
-      const result = await sendWithMsgIdFallback(opts?.msgId, this.accountId, (resolvedMsgId) => {
+      const result = await sendWithMsgIdFallback(to, opts?.msgId, this.accountId, (resolvedMsgId) => {
         if (kind === 'voice') {
           const voiceSource = resolveVoiceSource(source);
           return this.gw.sendVoice(target, voiceSource, { text: opts?.text, msgId: resolvedMsgId });

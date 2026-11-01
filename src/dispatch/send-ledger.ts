@@ -56,13 +56,18 @@ function evictIfNeeded(now: number): void {
   //    保留它们，宁可暂时超出容量，也不冒重复发送的风险。
 }
 
+export type OutboundKind = 'text' | 'voice';
+
 export function buildOutboundLedgerKey(
   accountId: string,
   inboundMessageId: string | undefined,
   text: string,
+  kind: OutboundKind = 'text',
 ): string {
   const digest = createHash('sha1').update(text).digest('hex');
-  return `${accountId}:${inboundMessageId ?? '-'}:${digest}`;
+  // 语音与文本分开记账：文本块已经发过同样的文字，不代表语音气泡也发过
+  // （TTS 仍然需要这段文字），反之亦然。
+  return `${accountId}:${inboundMessageId ?? '-'}:${kind}:${digest}`;
 }
 
 function isLive(entry: LedgerEntry | undefined, now: number): boolean {
@@ -78,10 +83,11 @@ export function reserveOutboundSend(
   inboundMessageId: string | undefined,
   text: string,
   now: number = Date.now(),
+  kind: OutboundKind = 'text',
 ): string | null {
   if (!text) return null;
   evictIfNeeded(now);
-  const key = buildOutboundLedgerKey(accountId, inboundMessageId, text);
+  const key = buildOutboundLedgerKey(accountId, inboundMessageId, text, kind);
   if (isLive(entries.get(key), now)) return null;
   const token = randomUUID();
   // 在途占位不设过期：媒体发送可能超过 2 分钟，必须活到 confirm/release。
@@ -99,9 +105,10 @@ export function confirmOutboundSend(
   text: string,
   token: string,
   now: number = Date.now(),
+  kind: OutboundKind = 'text',
 ): void {
   if (!text || !token) return;
-  const key = buildOutboundLedgerKey(accountId, inboundMessageId, text);
+  const key = buildOutboundLedgerKey(accountId, inboundMessageId, text, kind);
   const entry = entries.get(key);
   if (!entry || entry.token !== token) return;
   entries.set(key, { expiresAt: now + OUTBOUND_LEDGER_TTL_MS, state: 'confirmed', token });
@@ -116,9 +123,10 @@ export function releaseOutboundSend(
   inboundMessageId: string | undefined,
   text: string,
   token: string,
+  kind: OutboundKind = 'text',
 ): void {
   if (!text || !token) return;
-  const key = buildOutboundLedgerKey(accountId, inboundMessageId, text);
+  const key = buildOutboundLedgerKey(accountId, inboundMessageId, text, kind);
   const entry = entries.get(key);
   if (!entry || entry.token !== token) return;
   entries.delete(key);

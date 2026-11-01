@@ -28,6 +28,8 @@ export interface DeliverPayload {
   mediaUrl?: string;
   mediaUrls?: string[];
   audioAsVoice?: boolean;
+  /** TTS 失败时不要回退成文本（同一段文本已经作为普通消息发出去了） */
+  suppressTextFallback?: boolean;
 }
 
 export interface DeliverInfo {
@@ -110,6 +112,11 @@ export async function deliverReply(
       }
     }
     // TTS 不可用或合成失败 → 降级为纯文本 + 媒体
+    // 文本已经作为普通消息发过时，只补媒体，不再重复发同一段文字
+    if (payload.suppressTextFallback) {
+      if (hasMedia) await sendMediaUrls(ctx, mediaUrls);
+      return;
+    }
   }
 
   // ── Layer 2: 媒体发送 ──
