@@ -111,9 +111,18 @@ export async function dispatchToOpenClaw(
 
   const debounceConfig = account.config?.deliverDebounce;
   const debouncer = debounceConfig?.enabled !== false
-    ? new DeliverDebouncer(debounceConfig, (targetId, mergedText) =>
-        sendText({ to: targetId, text: mergedText, accountId: account.accountId, replyToId: envelope.messageId, account }).then(() => {}),
-      )
+    ? new DeliverDebouncer(debounceConfig, async (targetId, mergedText) => {
+        const result = await sendText({
+          to: targetId,
+          text: mergedText,
+          accountId: account.accountId,
+          replyToId: envelope.messageId,
+          account,
+        });
+        // sendText 内部把异常转成了 { error }；这里必须抛出去，
+        // 否则 ledger 会把失败当成功并保留 30 分钟的发送占位。
+        if (result.error) throw new Error(result.error);
+      })
     : undefined;
 
   const deliverCtx: DeliverContext = {

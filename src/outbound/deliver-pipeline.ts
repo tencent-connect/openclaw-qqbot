@@ -120,6 +120,9 @@ export async function deliverReply(
       const result = await ctx.sendText(ctx.qualifiedTarget, text);
       if (result.error) {
         ctx.log?.error(`[media] sendText failed: ${result.error}`);
+        // 抛出去让 outbound ledger 释放占位；否则失败也会被当成已发送，
+        // 后续同一段文本会被去重逻辑直接丢掉。
+        throw new Error(`sendText failed: ${result.error}`);
       }
     }
     return;
@@ -134,6 +137,7 @@ export async function deliverReply(
     const result = await ctx.sendText(ctx.qualifiedTarget, text);
     if (result.error) {
       ctx.log?.error(`[text] sendText failed: ${result.error}`);
+      throw new Error(`sendText failed: ${result.error}`);
     }
   }
 }

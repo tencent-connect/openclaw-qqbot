@@ -25,25 +25,38 @@ export const OUTBOUND_LEDGER_TTL_MS = 30 * 60 * 1000;
  * 足够覆盖一次发送 + 紧随其后的并发重试，又不至于在异常路径上把回复锁死 30 分钟。
  */
 export const OUTBOUND_LEDGER_INFLIGHT_TTL_MS = 2 * 60 * 1000;
-/** 上限保护：超了以后按过期时间淘汰最旧的一批，避免长跑进程内存漂移。 */
+/** 上限保护：超限时只淘汰最旧的 confirmed 条目，绝不淘汰在途占位。 */
 export const OUTBOUND_LEDGER_MAX_ENTRIES = 4000;
 
-const entries = new Map<string, number>();
+interface LedgerEntry {
+  expiresAt: number;
+  /** inflight = 已占位、还没确认发送结果；confirmed = 已真正发出 */
+  state: 'inflight' | 'confirmed';
+}
+
+const entries = new Map<string, LedgerEntry>();
 
 function evictIfNeeded(now: number): void {
-  if (entries.size <= OUTBOUND_LEDGER_MAX_ENTRIES) {
-    for (const [key, expiresAt] of entries) {
-      if (expiresAt <= now) entries.delete(key);
-      if (entries.size <= OUTBOUND_LEDGER_MAX_ENTRIES) break;
-    }
-    return;
+  // 1) 先清掉已经过期的条目
+  for (const [key, entry] of entries) {
+    if (entry.expiresAt <= now) entries.delete(key);
   }
-  const sorted = [...entries.entries()].sort((a, b) => a[1] - b[1]);
-  const dropCount = entries.size - OUTBOUND_LEDGER_MAX_ENTRIES;
-  for (let i = 0; i < dropCount; i += 1) {
-    const victim = sorted[i];
-    if (victim) entries.delete(victim[0]);
+  if (entries.size <= OUTBOUND_LEDGER_MAX_ENTRIES) return;
+
+  // 2) 只淘汰 confirmed 条目，按到期时间从旧到新。
+  //    绝不能淘汰 inflight：它代表一次正在进行的发送，删掉后同一段文本
+  //    会被并发派发再次 reserve，导致重复发送。
+  const confirmed = [...entries.entries()]
+    .filter(([, entry]) => entry.state === 'confirmed')
+    .sort((a, b) => a[1].expiresAt - b[1].expiresAt);
+  let overflow = entries.size - OUTBOUND_LEDGER_MAX_ENTRIES;
+  for (const [key] of confirmed) {
+    if (overflow <= 0) break;
+    entries.delete(key);
+    overflow -= 1;
   }
+  // 3) 如果仍然超限，说明 inflight 本身就超过上限（并发极高）。
+  //    保留它们，宁可暂时超出容量，也不冒重复发送的风险。
 }
 
 export function buildOutboundLedgerKey(
@@ -55,8 +68,8 @@ export function buildOutboundLedgerKey(
   return `${accountId}:${inboundMessageId ?? '-'}:${digest}`;
 }
 
-function isLive(expiresAt: number | undefined, now: number): boolean {
-  return expiresAt !== undefined && expiresAt > now;
+function isLive(entry: LedgerEntry | undefined, now: number): boolean {
+  return entry !== undefined && entry.expiresAt > now;
 }
 
 /**
@@ -73,7 +86,7 @@ export function reserveOutboundSend(
   evictIfNeeded(now);
   const key = buildOutboundLedgerKey(accountId, inboundMessageId, text);
   if (isLive(entries.get(key), now)) return false;
-  entries.set(key, now + OUTBOUND_LEDGER_INFLIGHT_TTL_MS);
+  entries.set(key, { expiresAt: now + OUTBOUND_LEDGER_INFLIGHT_TTL_MS, state: 'inflight' });
   return true;
 }
 
@@ -87,7 +100,10 @@ export function confirmOutboundSend(
   now: number = Date.now(),
 ): void {
   if (!text) return;
-  entries.set(buildOutboundLedgerKey(accountId, inboundMessageId, text), now + OUTBOUND_LEDGER_TTL_MS);
+  entries.set(buildOutboundLedgerKey(accountId, inboundMessageId, text), {
+    expiresAt: now + OUTBOUND_LEDGER_TTL_MS,
+    state: 'confirmed',
+  });
 }
 
 /**

@@ -116,25 +116,37 @@ export async function deliverDispatchPayload(
     state.log?.warn(`streaming fallback to static`);
   }
 
-  if (text && state.deliveredTexts.has(text) && !hasMedia && !payload.audioAsVoice) {
+  // 带媒体的 final 也要参与文本去重：只跳过重复字幕，媒体仍要发。
+  let textToSend = text;
+  let claimedText = false;
+  if (text && !payload.audioAsVoice) {
+    if (state.deliveredTexts.has(text)) {
+      textToSend = '';
+    } else if (!claimText(state, text)) {
+      textToSend = '';
+    } else {
+      claimedText = true;
+    }
+  }
+
+  const filteredPayload = filterDeliveredMedia(payload, state.deliveredMediaUrls);
+  const payloadToSend = textToSend
+    ? filteredPayload
+    : { ...filteredPayload, text: undefined };
+
+  // 纯重复文本没有媒体可发，直接结束；带媒体则继续发媒体。
+  if (!textToSend && !hasMedia && !payload.audioAsVoice) {
     return;
   }
 
-  const claimsText = Boolean(text && !hasMedia && !payload.audioAsVoice);
-  if (claimsText && !claimText(state, text)) return;
-
-  const filteredPayload = filterDeliveredMedia(payload, state.deliveredMediaUrls);
-  const payloadToSend = text && state.deliveredTexts.has(text)
-    ? { ...filteredPayload, text: undefined }
-    : filteredPayload;
   try {
     await sendReply(payloadToSend, info, state.ctx);
   } catch (err) {
-    if (claimsText) releaseText(state, text);
+    if (claimedText) releaseText(state, text);
     throw err;
   }
-  if (claimsText) confirmText(state, text);
-  if (text) state.deliveredTexts.add(text);
+  if (claimedText) confirmText(state, text);
+  if (textToSend) state.deliveredTexts.add(textToSend);
   for (const u of payloadToSend.mediaUrls ?? []) state.deliveredMediaUrls.add(u);
   if (payloadToSend.mediaUrl) state.deliveredMediaUrls.add(payloadToSend.mediaUrl);
 }
