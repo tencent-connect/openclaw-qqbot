@@ -256,6 +256,17 @@ await test('final 带媒体时重复字幕只跳过文本，媒体照常发送',
   assert.equal(second.replies[0]?.payload.mediaUrl, 'https://cdn/b.png');
 });
 
+await test('attachment-only final 仍然进入 deliverReply', async () => {
+  resetOutboundLedger();
+  const { state, replies } = createState();
+  const payload = {
+    attachments: [{ path: '/tmp/a.png' }],
+  } as unknown as DeliverPayload;
+  await deliverDispatchPayload(payload, { kind: 'final' }, state);
+  assert.equal(replies.length, 1);
+  assert.deepEqual((replies[0]?.payload as any).attachments, [{ path: '/tmp/a.png' }]);
+});
+
 await test('纯重复 final 文本不再发送', async () => {
   resetOutboundLedger();
   const first = createState();

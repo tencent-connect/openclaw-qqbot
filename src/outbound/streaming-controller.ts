@@ -28,6 +28,30 @@ export interface StreamingControllerDeps {
   log?: PluginLogger;
 }
 
+// ── 跨实例收尾锁 ──
+//
+// C2C 为了 steer 绕过了 concurrencyGuard：上一条消息还在 finalize 时，下一条
+// 可能已经进入并持有自己的 StreamingController。两个实例同时 complete 同一个
+// QQ target 会重新触发平台 session 冲突，所以这里按 target 串行化收尾，
+// 但不阻塞消息进入核心（steer 仍然生效）。
+
+const finalizeLocks = new Map<string, Promise<unknown>>();
+
+function finalizeLockKey(deps: StreamingControllerDeps): string {
+  return `${deps.accountId}:${deps.target.scope}:${deps.target.targetId}`;
+}
+
+function withTargetFinalizeLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const previous = finalizeLocks.get(key) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(fn);
+  const tail = current.then(() => undefined, () => undefined);
+  finalizeLocks.set(key, tail);
+  void tail.then(() => {
+    if (finalizeLocks.get(key) === tail) finalizeLocks.delete(key);
+  });
+  return current;
+}
+
 // ── 控制器 ──
 
 export class StreamingController {
@@ -78,21 +102,27 @@ export class StreamingController {
   }
 
   finalize(): Promise<void> {
-    this.chain = this.chain.then(() => this.handleFinalize()).catch((err) => {
-      this.deps.log?.error(`finalize error: ${err instanceof Error ? err.message : String(err)}`);
-      this.transition('failed', 'finalize_error');
-    });
+    const key = finalizeLockKey(this.deps);
+    this.chain = this.chain
+      .then(() => withTargetFinalizeLock(key, () => this.handleFinalize()))
+      .catch((err) => {
+        this.deps.log?.error(`finalize error: ${err instanceof Error ? err.message : String(err)}`);
+        this.transition('failed', 'finalize_error');
+      });
     return this.chain as Promise<void>;
   }
 
   async abort(reason?: string): Promise<void> {
     if (this.isTerminal) return;
     this.deps.log?.warn(`aborting stream reason=${reason ?? 'manual'} sent=${this.sentChunkCount}`);
-    if (this.session) {
-      try { await this.session.complete(); } catch (e) {
-        this.deps.log?.error(`abort complete failed: ${e instanceof Error ? e.message : String(e)}`);
-      }
-      this.session = null;
+    const session = this.session;
+    this.session = null;
+    if (session) {
+      await withTargetFinalizeLock(finalizeLockKey(this.deps), async () => {
+        try { await session.complete(); } catch (e) {
+          this.deps.log?.error(`abort complete failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      });
     }
     this.transition('failed', `abort:${reason ?? 'manual'}`);
   }

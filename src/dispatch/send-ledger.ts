@@ -8,36 +8,33 @@
  *   活跃 run 采纳、再被新 run 处理。每次派发都会新建一份 deliveredTexts，
  *   跨派发放就拦不住，表现就是同一段回复在 QQ 里出现两遍。
  *
- * 语义（两阶段，抢占 → 确认/释放）：
+ * 语义（两阶段 + ownership）：
  *   key = accountId : 入站 messageId : sha1(文本)
- *   - reserve：先占位（在途窗口 OUTBOUND_LEDGER_INFLIGHT_TTL_MS），并发派发互相拦截；
- *   - confirm：真正发出去之后才把占位延长到 OUTBOUND_LEDGER_TTL_MS；
- *   - release：发送失败立刻撤销占位，让重试还能再发一次。
+ *   - reserve：占位并返回 token；在途条目不设过期时间，直到 confirm/release；
+ *   - confirm：只有持有同一个 token 的调用者才能把占位延长到 30 分钟；
+ *   - release：发送失败时用同一个 token 撤销占位，让重试还能再发一次。
  *   同一入站消息重发同一段文本 → 丢弃并打印日志；
  *   用户再问一次是新的 messageId → 照常发送，不会被误伤。
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 /** 账本保留窗口。一分钟内重试、几分钟后的事件重放都要能拦住。 */
 export const OUTBOUND_LEDGER_TTL_MS = 30 * 60 * 1000;
-/**
- * 在途占位窗口。只管「已经 reserve、还没确认/释放」的这段时间：
- * 足够覆盖一次发送 + 紧随其后的并发重试，又不至于在异常路径上把回复锁死 30 分钟。
- */
-export const OUTBOUND_LEDGER_INFLIGHT_TTL_MS = 2 * 60 * 1000;
 /** 上限保护：超限时只淘汰最旧的 confirmed 条目，绝不淘汰在途占位。 */
 export const OUTBOUND_LEDGER_MAX_ENTRIES = 4000;
 
 interface LedgerEntry {
+  /** inflight 为 Infinity：占位必须活到调用方 confirm/release */
   expiresAt: number;
-  /** inflight = 已占位、还没确认发送结果；confirmed = 已真正发出 */
   state: 'inflight' | 'confirmed';
+  /** 所有权 token：防止上一次派发误确认/误释放下一次派发的占位 */
+  token: string;
 }
 
 const entries = new Map<string, LedgerEntry>();
 
 function evictIfNeeded(now: number): void {
-  // 1) 先清掉已经过期的条目
+  // 1) 先清掉已经过期的 confirmed 条目
   for (const [key, entry] of entries) {
     if (entry.expiresAt <= now) entries.delete(key);
   }
@@ -74,48 +71,57 @@ function isLive(entry: LedgerEntry | undefined, now: number): boolean {
 
 /**
  * 申请发送权（第一阶段：占位）。
- * @returns true 表示这段文本暂时归你发；false 表示已有人在发或已经发过，应当丢弃。
+ * @returns token 表示这段文本暂时归你发；null 表示已有人在发或已经发过，应当丢弃。
  */
 export function reserveOutboundSend(
   accountId: string,
   inboundMessageId: string | undefined,
   text: string,
   now: number = Date.now(),
-): boolean {
-  if (!text) return true;
+): string | null {
+  if (!text) return null;
   evictIfNeeded(now);
   const key = buildOutboundLedgerKey(accountId, inboundMessageId, text);
-  if (isLive(entries.get(key), now)) return false;
-  entries.set(key, { expiresAt: now + OUTBOUND_LEDGER_INFLIGHT_TTL_MS, state: 'inflight' });
-  return true;
+  if (isLive(entries.get(key), now)) return null;
+  const token = randomUUID();
+  // 在途占位不设过期：媒体发送可能超过 2 分钟，必须活到 confirm/release。
+  entries.set(key, { expiresAt: Number.POSITIVE_INFINITY, state: 'inflight', token });
+  return token;
 }
 
 /**
  * 确认发送成功（第二阶段）：把在途占位延长为正式保留窗口。
+ * token 不匹配说明占位已经被 release 并由后来者重新持有，本次调用直接忽略。
  */
 export function confirmOutboundSend(
   accountId: string,
   inboundMessageId: string | undefined,
   text: string,
+  token: string,
   now: number = Date.now(),
 ): void {
-  if (!text) return;
-  entries.set(buildOutboundLedgerKey(accountId, inboundMessageId, text), {
-    expiresAt: now + OUTBOUND_LEDGER_TTL_MS,
-    state: 'confirmed',
-  });
+  if (!text || !token) return;
+  const key = buildOutboundLedgerKey(accountId, inboundMessageId, text);
+  const entry = entries.get(key);
+  if (!entry || entry.token !== token) return;
+  entries.set(key, { expiresAt: now + OUTBOUND_LEDGER_TTL_MS, state: 'confirmed', token });
 }
 
 /**
  * 撤销占位（发送失败时调用）：让重试还能再发一次。
+ * token 不匹配时不能删除后来者的占位。
  */
 export function releaseOutboundSend(
   accountId: string,
   inboundMessageId: string | undefined,
   text: string,
+  token: string,
 ): void {
-  if (!text) return;
-  entries.delete(buildOutboundLedgerKey(accountId, inboundMessageId, text));
+  if (!text || !token) return;
+  const key = buildOutboundLedgerKey(accountId, inboundMessageId, text);
+  const entry = entries.get(key);
+  if (!entry || entry.token !== token) return;
+  entries.delete(key);
 }
 
 /** 测试用：清空账本。 */
