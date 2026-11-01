@@ -88,22 +88,17 @@ export async function deliverDispatchPayload(
     if (payload.audioAsVoice) {
       // 语音单独记账：文本块发过同样文字，不代表语音也发过（TTS 仍需要这段文字）
       const voiceClaim = text ? claimText(state, text, 'voice') : null;
-      // 同时占住共享的文本 key：TTS 失败回退成文字时，这段文字已经归本次派发，
-      // 并发的文本投递不会把它再发一遍。
-      const textClaim = text ? claimText(state, text, 'text') : null;
       const duplicated = !!text && !voiceClaim;
       // 重复语音只去字幕，媒体/附件照发；什么都没有才整体丢弃
       if (duplicated && !hasMedia && countAttachments(payload) === 0) return;
       const voicePayload = duplicated ? { ...payload, text: undefined } : payload;
       try {
-        await sendReply(voicePayload, info, state.ctx);
+        await sendReply(voicePayload, info, voiceCtx(state, text));
       } catch (err) {
         if (voiceClaim) releaseText(state, text, voiceClaim, 'voice');
-        if (textClaim) releaseText(state, text, textClaim, 'text');
         throw err;
       }
       if (voiceClaim) confirmText(state, text, voiceClaim, 'voice');
-      if (textClaim) confirmText(state, text, textClaim, 'text');
       if (text) state.deliveredTexts.add(text);
       return;
     }
@@ -139,17 +134,14 @@ export async function deliverDispatchPayload(
   // 否则语音永远发不出去；重复文本由 suppressTextFallback 在 TTS 失败时挡住。
   let textToSend = text;
   let claim: string | null = null;
-  let textClaim: string | null = null;
   let suppressTextFallback = false;
   if (text) {
     if (payload.audioAsVoice) {
       claim = claimText(state, text, 'voice');
       if (!claim) textToSend = '';
-      // 占住共享文本 key：TTS 失败时 deliverReply 直接发这段文字，不会再占位，
-      // 提前占好才不会与并发文本投递撞车。占不到 = 别人已发/在发，禁止回退重发。
-      textClaim = claimText(state, text, 'text');
+      // 文本已发出/已确认时禁止回退重发；并发场景由 pipeline 在真正发送前
+      // 通过 claimFallbackText 占位（TTS 成功则不留悬空 claim）。
       suppressTextFallback =
-        !textClaim ||
         state.deliveredTexts.has(text) ||
         hasConfirmedOutboundSend(
           state.ctx.accountId,
@@ -175,14 +167,12 @@ export async function deliverDispatchPayload(
   }
 
   try {
-    await sendReply(payloadToSend, info, state.ctx);
+    await sendReply(payloadToSend, info, payload.audioAsVoice ? voiceCtx(state, text) : state.ctx);
   } catch (err) {
     if (claim) releaseText(state, text, claim, payload.audioAsVoice ? 'voice' : 'text');
-    if (textClaim) releaseText(state, text, textClaim, 'text');
     throw err;
   }
   if (claim) confirmText(state, text, claim, payload.audioAsVoice ? 'voice' : 'text');
-  if (textClaim) confirmText(state, text, textClaim, 'text');
   if (textToSend) state.deliveredTexts.add(textToSend);
   for (const u of payloadToSend.mediaUrls ?? []) state.deliveredMediaUrls.add(u);
   if (payloadToSend.mediaUrl) state.deliveredMediaUrls.add(payloadToSend.mediaUrl);
@@ -198,6 +188,21 @@ export async function deliverDispatchPayloadSafe(
   } catch (err) {
     state.log?.error(`deliver error: ${err instanceof Error ? err.message : String(err)}`);
   }
+}
+
+/**
+ * 给语音 payload 的 ctx 挂上文本账本钩子：
+ * deliverReply 只会在 TTS 失败、真的要发回退文字时占位，
+ * 语音成功时不会留下一个假「已发文本」把后续文本回复挡掉。
+ */
+function voiceCtx(state: DispatchDeliverState, text: string): typeof state.ctx {
+  if (!text) return state.ctx;
+  return {
+    ...state.ctx,
+    claimFallbackText: () => claimText(state, text, 'text'),
+    confirmFallbackText: (token: string) => confirmText(state, text, token, 'text'),
+    releaseFallbackText: (token: string) => releaseText(state, text, token, 'text'),
+  };
 }
 
 function countAttachments(payload: DeliverPayload): number {
