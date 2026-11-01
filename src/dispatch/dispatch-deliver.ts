@@ -6,7 +6,7 @@
  * kind=final 与已发 block 去重；流占用时收尾后跳过静态文本。
  */
 import type { PluginLogger } from '../utils/plugin-logger.js';
-import { confirmOutboundSend, releaseOutboundSend, reserveOutboundSend, type OutboundKind } from './send-ledger.js';
+import { confirmOutboundSend, hasConfirmedOutboundSend, releaseOutboundSend, reserveOutboundSend, type OutboundKind } from './send-ledger.js';
 import { formatLogTextPreview } from '../utils/log-text-preview.js';
 import type {
   DeliverContext,
@@ -139,7 +139,14 @@ export async function deliverDispatchPayload(
     if (payload.audioAsVoice) {
       claim = claimText(state, text, 'voice');
       if (!claim) textToSend = '';
-      suppressTextFallback = state.deliveredTexts.has(text);
+      // 跨派发也要查账本：另一个派发已确认发过这段文本时，TTS 失败不能再回退重发
+      suppressTextFallback =
+        state.deliveredTexts.has(text) ||
+        hasConfirmedOutboundSend(
+          state.ctx.accountId,
+          state.inboundMessageId ?? state.ctx.replyToId,
+          text,
+        );
     } else if (state.deliveredTexts.has(text)) {
       textToSend = '';
     } else {

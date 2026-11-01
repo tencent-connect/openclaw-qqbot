@@ -132,6 +132,22 @@ export function releaseOutboundSend(
   entries.delete(key);
 }
 
+/**
+ * 跨派发查询：这段文本（默认文本通道）是否已经确认发出去了。
+ * 用于语音 TTS 失败时判断是否还要回退发文本——另一个派发可能已经发过。
+ */
+export function hasConfirmedOutboundSend(
+  accountId: string,
+  inboundMessageId: string | undefined,
+  text: string,
+  now: number = Date.now(),
+  kind: OutboundKind = 'text',
+): boolean {
+  if (!text) return false;
+  const entry = entries.get(buildOutboundLedgerKey(accountId, inboundMessageId, text, kind));
+  return entry?.state === 'confirmed' && entry.expiresAt > now;
+}
+
 /** 测试用：清空账本。 */
 export function resetOutboundLedger(): void {
   entries.clear();

@@ -6,6 +6,7 @@
 import assert from 'node:assert/strict';
 import {
   OUTBOUND_LEDGER_MAX_ENTRIES,
+  hasConfirmedOutboundSend,
   OUTBOUND_LEDGER_TTL_MS,
   confirmOutboundSend,
   releaseOutboundSend,
@@ -100,6 +101,24 @@ test('旧 token 不能 confirm/release 新持有者的占位', () => {
   assert.equal(reserveOutboundSend('acc', 'msg', 'handover', 3), null);
   releaseOutboundSend('acc', 'msg', 'handover', newToken);
   assert.ok(reserveOutboundSend('acc', 'msg', 'handover', 4));
+});
+
+test('跨派发可查到已确认的文本，语音与文本互不干扰', () => {
+  resetOutboundLedger();
+  const textToken = reserveOutboundSend('acc', 'msg', 'same-text', 0);
+  assert.ok(textToken);
+  // 还在途：不算已确认
+  assert.equal(hasConfirmedOutboundSend('acc', 'msg', 'same-text', 1), false);
+
+  confirmOutboundSend('acc', 'msg', 'same-text', textToken, 1);
+  assert.equal(hasConfirmedOutboundSend('acc', 'msg', 'same-text', 2), true);
+  // 语音通道没有记录，不能被文本的记录当成已发
+  assert.equal(hasConfirmedOutboundSend('acc', 'msg', 'same-text', 2, 'voice'), false);
+  // 过期后不再算已确认
+  assert.equal(
+    hasConfirmedOutboundSend('acc', 'msg', 'same-text', 1 + OUTBOUND_LEDGER_TTL_MS + 1),
+    false,
+  );
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
