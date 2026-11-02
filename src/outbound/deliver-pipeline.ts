@@ -135,38 +135,52 @@ export async function deliverReply(
   }
   const effectiveText = textSuppressed ? '' : text;
 
-  // ── Layer 2: 媒体发送 ──
-  if (hasMedia) {
-    await sendMediaUrls(ctx, mediaUrls);
-    // 附带文本一并发送
-    if (effectiveText) {
+  // fallbackToken 只有一个 owner：无论哪条出口都只结算一次，
+  // 否则失败路径会把已 confirm 的条目当成新占位 release 掉。
+  const settleFallback = (ok: boolean): void => {
+    if (!fallbackToken) return;
+    const token = fallbackToken;
+    fallbackToken = null;
+    if (ok) ctx.confirmFallbackText?.(token);
+    else ctx.releaseFallbackText?.(token);
+  };
+
+  try {
+    // ── Layer 2: 媒体发送 ──
+    if (hasMedia) {
+      await sendMediaUrls(ctx, mediaUrls);
+      // 附带文本一并发送
+      if (effectiveText) {
+        const result = await ctx.sendText(ctx.qualifiedTarget, effectiveText);
+        if (result.error) {
+          ctx.log?.error(`[media] sendText failed: ${result.error}`);
+          // 抛出去让 outbound ledger 释放占位；否则失败也会被当成已发送，
+          // 后续同一段文本会被去重逻辑直接丢掉。
+          throw new Error(`sendText failed: ${result.error}`);
+        }
+        settleFallback(true);
+      }
+      return;
+    }
+
+    // ── Layer 3: 纯文本回复 ──
+    if (!effectiveText) return;
+
+    if (ctx.debouncer) {
+      await ctx.debouncer.enqueue(ctx.qualifiedTarget, effectiveText);
+    } else {
       const result = await ctx.sendText(ctx.qualifiedTarget, effectiveText);
       if (result.error) {
-        ctx.log?.error(`[media] sendText failed: ${result.error}`);
-        if (fallbackToken) ctx.releaseFallbackText?.(fallbackToken);
-        // 抛出去让 outbound ledger 释放占位；否则失败也会被当成已发送，
-        // 后续同一段文本会被去重逻辑直接丢掉。
+        ctx.log?.error(`[text] sendText failed: ${result.error}`);
         throw new Error(`sendText failed: ${result.error}`);
       }
-      if (fallbackToken) ctx.confirmFallbackText?.(fallbackToken);
     }
-    return;
-  }
-
-  // ── Layer 3: 纯文本回复 ──
-  if (!effectiveText) return;
-
-  if (ctx.debouncer) {
-    await ctx.debouncer.enqueue(ctx.qualifiedTarget, effectiveText);
-    if (fallbackToken) ctx.confirmFallbackText?.(fallbackToken);
-  } else {
-    const result = await ctx.sendText(ctx.qualifiedTarget, effectiveText);
-    if (result.error) {
-      ctx.log?.error(`[text] sendText failed: ${result.error}`);
-      if (fallbackToken) ctx.releaseFallbackText?.(fallbackToken);
-      throw new Error(`sendText failed: ${result.error}`);
-    }
-    if (fallbackToken) ctx.confirmFallbackText?.(fallbackToken);
+    settleFallback(true);
+  } catch (err) {
+    // 媒体发送或 debouncer flush 失败时也要释放，否则 inflight 占位永不过期，
+    // 重试会被自己的去重挡住。
+    settleFallback(false);
+    throw err;
   }
 }
 
