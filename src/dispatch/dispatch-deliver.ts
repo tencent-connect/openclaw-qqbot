@@ -109,7 +109,7 @@ export async function deliverDispatchPayload(
     const claim = claimText(state, text);
     if (!claim) return;
     try {
-      await sendReply({ text }, info, state.ctx);
+      await sendReply({ text }, info, trackCtx(state));
     } catch (err) {
       releaseText(state, text, claim);
       throw err;
@@ -167,7 +167,7 @@ export async function deliverDispatchPayload(
   }
 
   try {
-    await sendReply(payloadToSend, info, payload.audioAsVoice ? voiceCtx(state, text) : state.ctx);
+    await sendReply(payloadToSend, info, payload.audioAsVoice ? voiceCtx(state, text) : trackCtx(state));
   } catch (err) {
     if (claim) releaseText(state, text, claim, payload.audioAsVoice ? 'voice' : 'text');
     throw err;
@@ -198,10 +198,23 @@ export async function deliverDispatchPayloadSafe(
 function voiceCtx(state: DispatchDeliverState, text: string): typeof state.ctx {
   if (!text) return state.ctx;
   return {
-    ...state.ctx,
+    ...trackCtx(state),
     claimFallbackText: () => claimText(state, text, 'text'),
     confirmFallbackText: (token: string) => confirmText(state, text, token, 'text'),
     releaseFallbackText: (token: string) => releaseText(state, text, token, 'text'),
+  };
+}
+
+/**
+ * 记录真正发出去的媒体：文本发送失败时 pipeline 会抛异常，
+ * 若不先记账，重试会把已经发成功的图片/文件再发一遍。
+ */
+function trackCtx(state: DispatchDeliverState): typeof state.ctx {
+  return {
+    ...state.ctx,
+    onMediaDelivered: (urls: string[]) => {
+      for (const u of urls) state.deliveredMediaUrls.add(u);
+    },
   };
 }
 

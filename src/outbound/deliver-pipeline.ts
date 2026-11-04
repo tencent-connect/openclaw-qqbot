@@ -53,6 +53,10 @@ export interface DeliverContext {
   claimFallbackText?: () => string | null;
   confirmFallbackText?: (token: string) => void;
   releaseFallbackText?: (token: string) => void;
+  /**
+   * 媒体已真正发出去的回调（即使后续文本发送失败也要记，重试才不会重发媒体）
+   */
+  onMediaDelivered?: (urls: string[]) => void;
   /** TTS 文字转语音（返回本地音频路径，失败返回 null） */
   textToSpeech?: (params: { text: string; cfg?: unknown; channel?: string; accountId?: string }) => Promise<{ audioPath: string | null; error?: string }>;
   /** 音频文件转 SILK Base64（QQ 语音格式） */
@@ -129,7 +133,10 @@ export async function deliverReply(
       else textSuppressed = true;
     }
     if (textSuppressed) {
-      if (hasMedia) await sendMediaUrls(ctx, mediaUrls);
+      if (hasMedia) {
+        const sent = await sendMediaUrls(ctx, mediaUrls);
+        if (sent.length) ctx.onMediaDelivered?.(sent);
+      }
       return;
     }
   }
@@ -148,7 +155,9 @@ export async function deliverReply(
   try {
     // ── Layer 2: 媒体发送 ──
     if (hasMedia) {
-      await sendMediaUrls(ctx, mediaUrls);
+      const sent = await sendMediaUrls(ctx, mediaUrls);
+      // 先记录：后面文本失败抛异常时，重试不该再发一遍已成功的媒体
+      if (sent.length) ctx.onMediaDelivered?.(sent);
       // 附带文本一并发送
       if (effectiveText) {
         const result = await ctx.sendText(ctx.qualifiedTarget, effectiveText);
@@ -186,8 +195,9 @@ export async function deliverReply(
 
 // ── 媒体批量发送 ──
 
-async function sendMediaUrls(ctx: DeliverContext, urls: string[]): Promise<void> {
+async function sendMediaUrls(ctx: DeliverContext, urls: string[]): Promise<string[]> {
   const failedUrls: string[] = [];
+  const sentUrls: string[] = [];
   for (const url of urls) {
     const result = await sendMedia({
       to: ctx.qualifiedTarget,
@@ -200,6 +210,8 @@ async function sendMediaUrls(ctx: DeliverContext, urls: string[]): Promise<void>
     if (result.error) {
       ctx.log?.error(`[media] ${result.error}`);
       failedUrls.push(url);
+    } else {
+      sentUrls.push(url);
     }
   }
 
@@ -215,6 +227,8 @@ async function sendMediaUrls(ctx: DeliverContext, urls: string[]): Promise<void>
       ctx.log?.error(`[media] failed to send failure notification: ${textResult.error}`);
     }
   }
+
+  return sentUrls;
 }
 
 // ── 语音意图处理 ──
