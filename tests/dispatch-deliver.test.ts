@@ -316,6 +316,32 @@ await test('filterDeliveredMedia drops already forwarded urls', () => {
   assert.deepEqual(filtered.mediaUrls, ['https://cdn/b.png']);
 });
 
+await test('filterDeliveredMedia drops already delivered attachments too', () => {
+  const filtered = filterDeliveredMedia(
+    {
+      text: 'caption',
+      attachments: [
+        { path: '/tmp/a.png', type: 'image' },
+        { url: 'https://cdn/b.png' },
+        { path: '/tmp/c.png' },
+      ],
+    },
+    new Set(['/tmp/a.png', 'https://cdn/b.png']),
+  ) as unknown as { attachments?: unknown[] };
+  assert.deepEqual(filtered.attachments, [{ path: '/tmp/c.png' }]);
+});
+
+await test('filterDeliveredMedia keeps attachments when nothing matches', () => {
+  const payload = {
+    text: 'caption',
+    attachments: [{ path: '/tmp/a.png' }],
+  };
+  const filtered = filterDeliveredMedia(payload, new Set(['/tmp/zzz.png'])) as unknown as {
+    attachments?: unknown[];
+  };
+  assert.deepEqual(filtered.attachments, [{ path: '/tmp/a.png' }]);
+});
+
 await test('deliverDispatchPayloadSafe swallows deliver errors', async () => {
   const { state, logLines } = createState({
     deliverReply: async () => {

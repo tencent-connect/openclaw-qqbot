@@ -246,9 +246,31 @@ export function filterDeliveredMedia(
   delivered: Set<string>,
 ): DeliverPayload {
   if (delivered.size === 0) return payload;
-  return {
+  const filtered: DeliverPayload = {
     ...payload,
     mediaUrl: payload.mediaUrl && !delivered.has(payload.mediaUrl) ? payload.mediaUrl : undefined,
     mediaUrls: payload.mediaUrls?.filter((u) => !delivered.has(u)),
   };
+  // attachments 也会被 sendMedia 当作媒体源（resolveAttachmentPaths），
+  // 已投递的附件必须一起滤掉，否则 caption 重试会把附件重发一遍。
+  const attachments = (payload as { attachments?: unknown }).attachments;
+  if (Array.isArray(attachments)) {
+    const kept = attachments.filter((a) => {
+      const key = attachmentSource(a);
+      return !(key && delivered.has(key));
+    });
+    if (kept.length !== attachments.length) {
+      (filtered as { attachments?: unknown[] }).attachments = kept;
+    }
+  }
+  return filtered;
+}
+
+/** 附件被投递时使用的源标识，与 resolveAttachmentPaths 保持同一优先级。 */
+function attachmentSource(attachment: unknown): string | undefined {
+  if (!attachment || typeof attachment !== 'object') return undefined;
+  const { url, path } = attachment as { url?: unknown; path?: unknown };
+  if (typeof url === 'string' && url) return url;
+  if (typeof path === 'string' && path) return path;
+  return undefined;
 }
