@@ -17,7 +17,8 @@ interface PendingDeliver {
   texts: string[];
   firstAt: number;
   timer: ReturnType<typeof setTimeout> | null;
-  resolve: () => void;
+  /** 每条入队文本对应一个等待者，flush 成功/失败时一起结算 */
+  waiters: Array<{ resolve: () => void; reject: (err: unknown) => void }>;
 }
 
 export class DeliverDebouncer {
@@ -53,25 +54,31 @@ export class DeliverDebouncer {
 
     const existing = this.pending.get(targetId);
     if (existing) {
+      // 同一批里每段文本都要等真正的发送结果，不能入队即算成功。
+      const waiter = new Promise<void>((resolve, reject) => {
+        existing.waiters.push({ resolve, reject });
+      });
       existing.texts.push(text);
-      // 重置窗口定时器
       if (existing.timer) clearTimeout(existing.timer);
-      // 检查是否超过最大等待
       if (Date.now() - existing.firstAt >= this.maxWaitMs) {
-        await this.doFlush(targetId);
+        await this.doFlush(targetId).catch(() => {});
       } else {
-        existing.timer = setTimeout(() => this.doFlush(targetId), this.windowMs);
+        existing.timer = setTimeout(() => {
+          void this.doFlush(targetId).catch(() => {});
+        }, this.windowMs);
       }
-      return;
+      return waiter;
     }
 
     // 新建 pending
-    return new Promise<void>((resolve) => {
+    return new Promise<void>((resolve, reject) => {
       const pending: PendingDeliver = {
         texts: [text],
         firstAt: Date.now(),
-        timer: setTimeout(() => this.doFlush(targetId), this.windowMs),
-        resolve,
+        timer: setTimeout(() => {
+          void this.doFlush(targetId).catch(() => {});
+        }, this.windowMs),
+        waiters: [{ resolve, reject }],
       };
       this.pending.set(targetId, pending);
     });
@@ -87,8 +94,11 @@ export class DeliverDebouncer {
 
     try {
       await this.flush(targetId, merged);
-    } finally {
-      pending.resolve();
+      for (const waiter of pending.waiters) waiter.resolve();
+    } catch (err) {
+      // 发送失败要传给调用方，让 outbound ledger 释放占位并可重试。
+      for (const waiter of pending.waiters) waiter.reject(err);
+      throw err;
     }
   }
 
@@ -97,6 +107,7 @@ export class DeliverDebouncer {
    */
   async flushAll(): Promise<void> {
     const keys = [...this.pending.keys()];
-    await Promise.all(keys.map((k) => this.doFlush(k)));
+    // 错误已经通过各自的 enqueue Promise 抛给调用方；这里只负责把队列排空。
+    await Promise.all(keys.map((k) => this.doFlush(k).catch(() => {})));
   }
 }

@@ -28,6 +28,8 @@ export interface DeliverPayload {
   mediaUrl?: string;
   mediaUrls?: string[];
   audioAsVoice?: boolean;
+  /** TTS 失败时不要回退成文本（同一段文本已经作为普通消息发出去了） */
+  suppressTextFallback?: boolean;
 }
 
 export interface DeliverInfo {
@@ -44,6 +46,17 @@ export interface DeliverContext {
   sendText: (to: string, text: string) => Promise<SendResult>;
   /** 发送媒体 */
   sendMedia: (to: string, source: string, opts?: { text?: string; mediaKind?: MediaKind }) => Promise<SendResult>;
+  /**
+   * TTS 失败、需要回退成文本时，先向出站账本申请文本占位。
+   * 返回 null 表示这段文本已由别的派发发出/正在发，不能再发。
+   */
+  claimFallbackText?: () => string | null;
+  confirmFallbackText?: (token: string) => void;
+  releaseFallbackText?: (token: string) => void;
+  /**
+   * 媒体已真正发出去的回调（即使后续文本发送失败也要记，重试才不会重发媒体）
+   */
+  onMediaDelivered?: (urls: string[]) => void;
   /** TTS 文字转语音（返回本地音频路径，失败返回 null） */
   textToSpeech?: (params: { text: string; cfg?: unknown; channel?: string; accountId?: string }) => Promise<{ audioPath: string | null; error?: string }>;
   /** 音频文件转 SILK Base64（QQ 语音格式） */
@@ -102,6 +115,8 @@ export async function deliverReply(
   );
 
   // ── Layer 1: 语音意图 ──
+  let fallbackToken: string | null = null;
+  let textSuppressed = !!payload.suppressTextFallback;
   if (payload.audioAsVoice) {
     if (ctx.textToSpeech && text) {
       const handled = await handleVoiceIntent(text, ctx);
@@ -110,38 +125,79 @@ export async function deliverReply(
       }
     }
     // TTS 不可用或合成失败 → 降级为纯文本 + 媒体
+    // 文本已经作为普通消息发过时，只补媒体，不再重复发同一段文字
+    if (!textSuppressed && text && ctx.claimFallbackText) {
+      // 到真正要发文字的时刻才占位：TTS 成功时不留悬空 claim
+      const token = ctx.claimFallbackText();
+      if (token) fallbackToken = token;
+      else textSuppressed = true;
+    }
+    if (textSuppressed) {
+      if (hasMedia) {
+        const sent = await sendMediaUrls(ctx, mediaUrls);
+        if (sent.length) ctx.onMediaDelivered?.(sent);
+      }
+      return;
+    }
   }
+  const effectiveText = textSuppressed ? '' : text;
 
-  // ── Layer 2: 媒体发送 ──
-  if (hasMedia) {
-    await sendMediaUrls(ctx, mediaUrls);
-    // 附带文本一并发送
-    if (text) {
-      const result = await ctx.sendText(ctx.qualifiedTarget, text);
+  // fallbackToken 只有一个 owner：无论哪条出口都只结算一次，
+  // 否则失败路径会把已 confirm 的条目当成新占位 release 掉。
+  const settleFallback = (ok: boolean): void => {
+    if (!fallbackToken) return;
+    const token = fallbackToken;
+    fallbackToken = null;
+    if (ok) ctx.confirmFallbackText?.(token);
+    else ctx.releaseFallbackText?.(token);
+  };
+
+  try {
+    // ── Layer 2: 媒体发送 ──
+    if (hasMedia) {
+      const sent = await sendMediaUrls(ctx, mediaUrls);
+      // 先记录：后面文本失败抛异常时，重试不该再发一遍已成功的媒体
+      if (sent.length) ctx.onMediaDelivered?.(sent);
+      // 附带文本一并发送
+      if (effectiveText) {
+        const result = await ctx.sendText(ctx.qualifiedTarget, effectiveText);
+        if (result.error) {
+          ctx.log?.error(`[media] sendText failed: ${result.error}`);
+          // 抛出去让 outbound ledger 释放占位；否则失败也会被当成已发送，
+          // 后续同一段文本会被去重逻辑直接丢掉。
+          throw new Error(`sendText failed: ${result.error}`);
+        }
+        settleFallback(true);
+      }
+      return;
+    }
+
+    // ── Layer 3: 纯文本回复 ──
+    if (!effectiveText) return;
+
+    if (ctx.debouncer) {
+      await ctx.debouncer.enqueue(ctx.qualifiedTarget, effectiveText);
+    } else {
+      const result = await ctx.sendText(ctx.qualifiedTarget, effectiveText);
       if (result.error) {
-        ctx.log?.error(`[media] sendText failed: ${result.error}`);
+        ctx.log?.error(`[text] sendText failed: ${result.error}`);
+        throw new Error(`sendText failed: ${result.error}`);
       }
     }
-    return;
-  }
-
-  // ── Layer 3: 纯文本回复 ──
-  if (!text) return;
-
-  if (ctx.debouncer) {
-    await ctx.debouncer.enqueue(ctx.qualifiedTarget, text);
-  } else {
-    const result = await ctx.sendText(ctx.qualifiedTarget, text);
-    if (result.error) {
-      ctx.log?.error(`[text] sendText failed: ${result.error}`);
-    }
+    settleFallback(true);
+  } catch (err) {
+    // 媒体发送或 debouncer flush 失败时也要释放，否则 inflight 占位永不过期，
+    // 重试会被自己的去重挡住。
+    settleFallback(false);
+    throw err;
   }
 }
 
 // ── 媒体批量发送 ──
 
-async function sendMediaUrls(ctx: DeliverContext, urls: string[]): Promise<void> {
+async function sendMediaUrls(ctx: DeliverContext, urls: string[]): Promise<string[]> {
   const failedUrls: string[] = [];
+  const sentUrls: string[] = [];
   for (const url of urls) {
     const result = await sendMedia({
       to: ctx.qualifiedTarget,
@@ -154,6 +210,8 @@ async function sendMediaUrls(ctx: DeliverContext, urls: string[]): Promise<void>
     if (result.error) {
       ctx.log?.error(`[media] ${result.error}`);
       failedUrls.push(url);
+    } else {
+      sentUrls.push(url);
     }
   }
 
@@ -169,6 +227,8 @@ async function sendMediaUrls(ctx: DeliverContext, urls: string[]): Promise<void>
       ctx.log?.error(`[media] failed to send failure notification: ${textResult.error}`);
     }
   }
+
+  return sentUrls;
 }
 
 // ── 语音意图处理 ──

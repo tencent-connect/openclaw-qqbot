@@ -32,7 +32,8 @@ export interface GatewayCallbacks {
 }
 
 export interface SendOptions {
-  msgId?: string;
+  /** null = 显式不带 msgId（主动消息），跳过缓存回填 */
+  msgId?: string | null;
   text?: string;
 }
 
@@ -322,6 +323,8 @@ export class QQBotGateway {
 
 function attachMsgId(target: ReplyTarget, opts?: SendOptions): ReplyTarget {
   if (opts?.msgId) return { ...target, msgId: opts.msgId };
+  // 显式 null：调用方要求发主动消息，不能再用缓存里的 msg_id 回填
+  if (opts && 'msgId' in opts && opts.msgId === null) return target;
   // 无显式 msgId 时尝试从缓存获取
   const cached = getCachedMsgId(target.scope, target.targetId);
   return cached ? { ...target, msgId: cached } : target;

@@ -10,6 +10,8 @@ import { QQBotGateway } from '../gateway/index.js';
 import type { ResolvedQQBotAccount } from '../types.js';
 import { parseTarget } from './target.js';
 import { ReplyLimiter } from './reply-limiter.js';
+import { isInvalidMsgIdError } from './msgid-error.js';
+import { clearMsgIdCache } from '../features/msgid-cache.js';
 
 // ── Gateway + Limiter 注册表（生命周期由 channel.ts 管理）──
 
@@ -26,16 +28,66 @@ function getLimiter(accountId: string): ReplyLimiter {
 }
 
 /**
- * 解析 replyToId：超出被动回复限额时自动降级为主动消息（不传 msgId）。
- * @returns 实际使用的 msgId（超限时为 undefined）
+ * 解析 replyToId：超出被动回复限额时自动降级为主动消息。
+ * @returns
+ *   - 非空字符串：用这个 msgId 走被动回复
+ *   - null：调用方明确要求主动消息（限额/TTL 用尽），不能再用缓存回填
+ *   - undefined：本就没有 replyToId，允许网关按缓存挑一条最近的
  */
-function resolveMsgId(replyToId: string | undefined, accountId: string): string | undefined {
+function resolveMsgId(replyToId: string | undefined, accountId: string): string | null | undefined {
   if (!replyToId) return undefined;
   const limiter = getLimiter(accountId);
   const result = limiter.checkLimit(replyToId);
-  if (!result.allowed) return undefined;
+  // 限额用尽：必须显式 null，否则 attachMsgId 会把缓存里的旧 msg_id 塞回来，
+  // 发送失败后又会因为 msgId 已解析而拿不到重试机会。
+  if (!result.allowed) return null;
   limiter.record(replyToId);
   return replyToId;
+}
+
+function expireMsgId(replyToId: string | undefined, accountId: string): void {
+  if (!replyToId) return;
+  getLimiter(accountId).expire(replyToId);
+}
+
+/**
+ * 失效的 msg_id 会同时留在 msgid-cache 里，网关发送时会自动回填。
+ * 只清 limiter 不清缓存，重发仍会带上同一个失效 ID，降级逻辑等于没生效。
+ */
+function expireCachedMsgId(to: string | undefined): void {
+  if (!to) return;
+  try {
+    const target = parseTarget(to);
+    clearMsgIdCache(target.scope, target.targetId);
+  } catch {
+    // target 解析失败时不影响主流程
+  }
+}
+
+/**
+ * 发送并处理被动回复 msg_id 失效。
+ *
+ * QQ 的 msg_id 只在 5 分钟内有效，超时或额度用尽后平台会直接拒绝。
+ * 第一次发送因此失败时消息肯定没发出去，去掉 msgId 重发一次（主动消息），
+ * 既能把回复送到，也避免核心把投递记为 send_attempt_started / unknown，
+ * 进而给用户发 "couldn't confirm whether my previous reply reached this chat"。
+ */
+async function sendWithMsgIdFallback<T>(
+  to: string,
+  replyToId: string | undefined,
+  accountId: string,
+  send: (msgId: string | null | undefined) => Promise<T>,
+): Promise<T> {
+  const msgId = resolveMsgId(replyToId, accountId);
+  try {
+    return await send(msgId);
+  } catch (err) {
+    if (!msgId || !isInvalidMsgIdError(err)) throw err;
+    expireMsgId(replyToId, accountId);
+    // 必须同时清缓存并显式传 null：否则 attachMsgId 会把同一个失效 ID 回填回来。
+    expireCachedMsgId(to);
+    return await send(null);
+  }
 }
 
 export function registerGateway(accountId: string, gw: QQBotGateway): void {
@@ -72,6 +124,8 @@ const MEDIA_KIND_TO_FILE_TYPE: Record<MediaKind, MediaFileType> = {
   file: MediaFileType.FILE,
 };
 
+export { isInvalidMsgIdError } from './msgid-error.js';
+
 export interface SendResult {
   messageId?: string;
   error?: string;
@@ -92,8 +146,8 @@ export async function sendText(params: {
   const gw = getOrCreateGateway(params.account);
   try {
     const target = parseTarget(params.to);
-    const msgId = resolveMsgId(params.replyToId, accountId);
-    const result = await gw.sendText(target, params.text, { msgId });
+    const result = await sendWithMsgIdFallback(params.to, params.replyToId, accountId, (msgId) =>
+      gw.sendText(target, params.text, { msgId }));
     return { messageId: result.id };
   } catch (err: unknown) { return formatError(err); }
 }
@@ -112,22 +166,20 @@ export async function sendMedia(params: {
   try {
     const target = parseTarget(params.to);
     const kind = params.mediaKind ?? 'image';
-    const msgId = resolveMsgId(params.replyToId, accountId);
-    if (kind === 'voice') {
-      const source = resolveVoiceSource(params.mediaUrl);
-      const result = await gw.sendVoice(target, source, { text: params.text, msgId });
-      return { messageId: result.id };
-    }
-    if (kind === 'video') {
-      const result = await gw.sendVideo(target, params.mediaUrl, { text: params.text, msgId });
-      return { messageId: result.id };
-    }
-    if (kind === 'file') {
-      const result = await gw.sendFile(target, params.mediaUrl, { text: params.text, msgId });
-      return { messageId: result.id };
-    }
-    const fileType = MEDIA_KIND_TO_FILE_TYPE[kind];
-    const result = await gw.sendMedia(target, params.mediaUrl, { text: params.text, msgId, fileType });
+    const result = await sendWithMsgIdFallback(params.to, params.replyToId, accountId, (msgId) => {
+      if (kind === 'voice') {
+        const source = resolveVoiceSource(params.mediaUrl);
+        return gw.sendVoice(target, source, { text: params.text, msgId });
+      }
+      if (kind === 'video') {
+        return gw.sendVideo(target, params.mediaUrl, { text: params.text, msgId });
+      }
+      if (kind === 'file') {
+        return gw.sendFile(target, params.mediaUrl, { text: params.text, msgId });
+      }
+      const fileType = MEDIA_KIND_TO_FILE_TYPE[kind];
+      return gw.sendMedia(target, params.mediaUrl, { text: params.text, msgId, fileType });
+    });
     return { messageId: result.id };
   } catch (err: unknown) { return formatError(err); }
 }
@@ -143,8 +195,8 @@ export async function sendVoice(params: {
   const gw = getOrCreateGateway(params.account);
   try {
     const target = parseTarget(params.to);
-    const msgId = resolveMsgId(params.replyToId, accountId);
-    const result = await gw.sendVoice(target, params.source, { msgId });
+    const result = await sendWithMsgIdFallback(params.to, params.replyToId, accountId, (msgId) =>
+      gw.sendVoice(target, params.source, { msgId }));
     return { messageId: result.id };
   } catch (err: unknown) { return formatError(err); }
 }
@@ -160,8 +212,8 @@ export async function sendVideo(params: {
   const gw = getOrCreateGateway(params.account);
   try {
     const target = parseTarget(params.to);
-    const msgId = resolveMsgId(params.replyToId, accountId);
-    const result = await gw.sendVideo(target, params.videoUrl, { msgId });
+    const result = await sendWithMsgIdFallback(params.to, params.replyToId, accountId, (msgId) =>
+      gw.sendVideo(target, params.videoUrl, { msgId }));
     return { messageId: result.id };
   } catch (err: unknown) { return formatError(err); }
 }
@@ -174,8 +226,8 @@ export class OutboundService {
   async sendText(to: string, text: string, msgId?: string): Promise<SendResult> {
     try {
       const target = parseTarget(to);
-      const resolvedMsgId = resolveMsgId(msgId, this.accountId);
-      const result = await this.gw.sendText(target, text, { msgId: resolvedMsgId });
+      const result = await sendWithMsgIdFallback(to, msgId, this.accountId, (resolvedMsgId) =>
+        this.gw.sendText(target, text, { msgId: resolvedMsgId }));
       return { messageId: result.id };
     } catch (err: unknown) { return formatError(err); }
   }
@@ -184,22 +236,20 @@ export class OutboundService {
     try {
       const target = parseTarget(to);
       const kind = opts?.mediaKind ?? 'image';
-      const resolvedMsgId = resolveMsgId(opts?.msgId, this.accountId);
-      if (kind === 'voice') {
-        const voiceSource = resolveVoiceSource(source);
-        const result = await this.gw.sendVoice(target, voiceSource, { text: opts?.text, msgId: resolvedMsgId });
-        return { messageId: result.id };
-      }
-      if (kind === 'video') {
-        const result = await this.gw.sendVideo(target, source, { text: opts?.text, msgId: resolvedMsgId });
-        return { messageId: result.id };
-      }
-      if (kind === 'file') {
-        const result = await this.gw.sendFile(target, source, { text: opts?.text, msgId: resolvedMsgId, fileName: path.basename(source) });
-        return { messageId: result.id };
-      }
-      const fileType = MEDIA_KIND_TO_FILE_TYPE[kind];
-      const result = await this.gw.sendMedia(target, source, { text: opts?.text, msgId: resolvedMsgId, fileType });
+      const result = await sendWithMsgIdFallback(to, opts?.msgId, this.accountId, (resolvedMsgId) => {
+        if (kind === 'voice') {
+          const voiceSource = resolveVoiceSource(source);
+          return this.gw.sendVoice(target, voiceSource, { text: opts?.text, msgId: resolvedMsgId });
+        }
+        if (kind === 'video') {
+          return this.gw.sendVideo(target, source, { text: opts?.text, msgId: resolvedMsgId });
+        }
+        if (kind === 'file') {
+          return this.gw.sendFile(target, source, { text: opts?.text, msgId: resolvedMsgId, fileName: path.basename(source) });
+        }
+        const fileType = MEDIA_KIND_TO_FILE_TYPE[kind];
+        return this.gw.sendMedia(target, source, { text: opts?.text, msgId: resolvedMsgId, fileType });
+      });
       return { messageId: result.id };
     } catch (err: unknown) { return formatError(err); }
   }

@@ -28,6 +28,30 @@ export interface StreamingControllerDeps {
   log?: PluginLogger;
 }
 
+// ── 跨实例收尾锁 ──
+//
+// C2C 为了 steer 绕过了 concurrencyGuard：上一条消息还在 finalize 时，下一条
+// 可能已经进入并持有自己的 StreamingController。两个实例同时 complete 同一个
+// QQ target 会重新触发平台 session 冲突，所以这里按 target 串行化收尾，
+// 但不阻塞消息进入核心（steer 仍然生效）。
+
+const finalizeLocks = new Map<string, Promise<unknown>>();
+
+function finalizeLockKey(deps: StreamingControllerDeps): string {
+  return `${deps.accountId}:${deps.target.scope}:${deps.target.targetId}`;
+}
+
+function withTargetFinalizeLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const previous = finalizeLocks.get(key) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(fn);
+  const tail = current.then(() => undefined, () => undefined);
+  finalizeLocks.set(key, tail);
+  void tail.then(() => {
+    if (finalizeLocks.get(key) === tail) finalizeLocks.delete(key);
+  });
+  return current;
+}
+
 // ── 控制器 ──
 
 export class StreamingController {
@@ -45,6 +69,9 @@ export class StreamingController {
 
   /** 串行队列 */
   private chain: Promise<unknown> = Promise.resolve();
+
+  /** abort 后拒绝再开新会话（等锁期间在途 chunk 不能再建 session） */
+  private aborted = false;
 
   constructor(private readonly deps: StreamingControllerDeps) {}
 
@@ -69,6 +96,7 @@ export class StreamingController {
   // ── 入口 ──
 
   onPartialReply(text: string): Promise<void> {
+    if (this.aborted) return Promise.resolve();
     this._hasStarted = true; // 同步置位：不等异步发送，final 就能感知流式已启动
     this.chain = this.chain.then(() => this.handleChunk(text)).catch((err) => {
       this.deps.log?.error(`onPartialReply error: ${err instanceof Error ? err.message : String(err)}`);
@@ -78,21 +106,29 @@ export class StreamingController {
   }
 
   finalize(): Promise<void> {
-    this.chain = this.chain.then(() => this.handleFinalize()).catch((err) => {
-      this.deps.log?.error(`finalize error: ${err instanceof Error ? err.message : String(err)}`);
-      this.transition('failed', 'finalize_error');
-    });
+    const key = finalizeLockKey(this.deps);
+    this.chain = this.chain
+      .then(() => withTargetFinalizeLock(key, () => this.handleFinalize()))
+      .catch((err) => {
+        this.deps.log?.error(`finalize error: ${err instanceof Error ? err.message : String(err)}`);
+        this.transition('failed', 'finalize_error');
+      });
     return this.chain as Promise<void>;
   }
 
   async abort(reason?: string): Promise<void> {
     if (this.isTerminal) return;
     this.deps.log?.warn(`aborting stream reason=${reason ?? 'manual'} sent=${this.sentChunkCount}`);
-    if (this.session) {
-      try { await this.session.complete(); } catch (e) {
-        this.deps.log?.error(`abort complete failed: ${e instanceof Error ? e.message : String(e)}`);
-      }
-      this.session = null;
+    // 先置位再等锁：等锁窗口内的 chunk 不能开新 session，否则会留下一个没人收尾的流
+    this.aborted = true;
+    const session = this.session;
+    this.session = null;
+    if (session) {
+      await withTargetFinalizeLock(finalizeLockKey(this.deps), async () => {
+        try { await session.complete(); } catch (e) {
+          this.deps.log?.error(`abort complete failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      });
     }
     this.transition('failed', `abort:${reason ?? 'manual'}`);
   }
@@ -100,7 +136,7 @@ export class StreamingController {
   // ── 核心逻辑 ──
 
   private async handleChunk(text: string): Promise<void> {
-    if (this.isTerminal || !text) return;
+    if (this.isTerminal || this.aborted || !text) return;
 
     // 正常续写：新文本前缀匹配（含空白归一化）
     if (prefixMatches(this.lastAcceptedFull, text)) {
@@ -119,7 +155,8 @@ export class StreamingController {
     // 前缀不匹配 — 长度回退 → 新回复（工具调用后）
     if (text.length < this.lastAcceptedFull.length) {
       this.deps.log?.info(`new reply: lastAccepted=${this.lastAcceptedFull.length}→chunk=${text.length}`);
-      await this.completeSession('new_reply');
+      // 换会话也要进 target 锁：否则另一个控制器的 finalize 会与本条 complete 重叠
+      await withTargetFinalizeLock(finalizeLockKey(this.deps), () => this.completeSession('new_reply'));
       this.lastAcceptedFull = '';
       await this.sendUpdate(text);
       return;
@@ -157,6 +194,7 @@ export class StreamingController {
   // ── QQ 交互 ──
 
   private async sendUpdate(text: string): Promise<void> {
+    if (this.aborted) return;
     if (!this.session) {
       this.session = this.deps.gateway.openStream(this.deps.target, this.deps.replyToId);
       this.transition('streaming', 'first_chunk');

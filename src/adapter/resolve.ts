@@ -18,6 +18,14 @@ export interface RuntimeAdapters {
   inboundRun: ((params: any) => Promise<any>) | null;
   /** 回复分发（带 block buffer） */
   dispatchReply: ((params: any) => Promise<any>) | null;
+  /**
+   * 低层派发入口（allowActiveQueueResolution=true）。
+   * 核心注释：Low-level plugin dispatch must reach queue policy before waiting on
+   * the active reply owner —— 只有它能在上一轮 run 还在跑时把消息送进 queue policy，
+   * 从而让 messages.queue.mode=steer 真正生效。传给 dispatchReply 的
+   * dispatchReplyFromConfig 参数即可切到这条路径。
+   */
+  lowLevelDispatch: ((params: any) => Promise<any>) | null;
   /** Agent 路由解析 */
   resolveAgentRoute: ((params: any) => any) | null;
   /** 构建入站上下文（自动适配 inbound.buildContext / reply.finalizeInboundContext） */
@@ -116,6 +124,11 @@ export function resolveRuntimeAdapters(
 
   const dispatchReply = probeFunction(rt, [
     ['channel', 'reply', 'dispatchReplyWithBufferedBlockDispatcher'],
+  ]);
+
+  // 低层派发：核心 2026-10+ 暴露，命中后 steer 才能在活跃 run 内注入
+  const lowLevelDispatch = probeFunction(rt, [
+    ['channel', 'reply', 'dispatchReplyFromConfig'],
   ]);
 
   const resolveAgentRoute = probeFunction(rt, [
@@ -224,6 +237,7 @@ export function resolveRuntimeAdapters(
   const resolved = [
     inboundRun && 'inboundRun',
     dispatchReply && 'dispatchReply',
+    lowLevelDispatch && 'lowLevelDispatch',
     resolveAgentRoute && 'resolveAgentRoute',
     buildInboundContext && 'buildInboundContext',
     resolveStorePath && 'resolveStorePath',
@@ -242,6 +256,7 @@ export function resolveRuntimeAdapters(
   return {
     inboundRun,
     dispatchReply,
+    lowLevelDispatch,
     resolveAgentRoute,
     buildInboundContext,
     resolveStorePath,

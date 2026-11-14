@@ -28,6 +28,43 @@ import {
 } from './dispatch-deliver.js';
 
 /**
+ * 可重试的瞬时 dispatch 失败。
+ *
+ * - `DispatchSessionRefreshRequiredError`：同一 session 有并发启动时，核心在校验阶段发现
+ *   会话已变（新 run 抢先建立），会要求调用方重试。
+ * - `Model runtime replacement is in progress`：核心正在热替换模型运行时，短时间内拒绝
+ *   已被插件接纳的工作项。
+ *
+ * 这两类都不是消息本身的问题，原样抛给用户只会得到一条“没跑成”的提示，所以这里做有限重试。
+ */
+const RETRYABLE_DISPATCH_ERROR = /DispatchSessionRefreshRequired|Model runtime replacement is in progress|admitted plugin work cannot wait/i;
+const DISPATCH_RETRY_DELAYS_MS = [300, 1200];
+
+function isRetryableDispatchError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return RETRYABLE_DISPATCH_ERROR.test(`${err.name}: ${err.message}`);
+}
+
+async function withDispatchRetry<T>(
+  label: string,
+  run: () => Promise<T>,
+  log?: PluginLogger,
+): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await run();
+    } catch (err) {
+      const delay = DISPATCH_RETRY_DELAYS_MS[attempt];
+      if (delay === undefined || !isRetryableDispatchError(err)) throw err;
+      log?.warn(
+        `${label} transient dispatch failure, retry ${attempt + 1}/${DISPATCH_RETRY_DELAYS_MS.length} in ${delay}ms: ${(err as Error).message}`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+}
+
+/**
  * 将经过中间件处理的入站消息转发给 OpenClaw AI
  */
 export async function dispatchToOpenClaw(
@@ -74,9 +111,18 @@ export async function dispatchToOpenClaw(
 
   const debounceConfig = account.config?.deliverDebounce;
   const debouncer = debounceConfig?.enabled !== false
-    ? new DeliverDebouncer(debounceConfig, (targetId, mergedText) =>
-        sendText({ to: targetId, text: mergedText, accountId: account.accountId, replyToId: envelope.messageId, account }).then(() => {}),
-      )
+    ? new DeliverDebouncer(debounceConfig, async (targetId, mergedText) => {
+        const result = await sendText({
+          to: targetId,
+          text: mergedText,
+          accountId: account.accountId,
+          replyToId: envelope.messageId,
+          account,
+        });
+        // sendText 内部把异常转成了 { error }；这里必须抛出去，
+        // 否则 ledger 会把失败当成功并保留 30 分钟的发送占位。
+        if (result.error) throw new Error(result.error);
+      })
     : undefined;
 
   const deliverCtx: DeliverContext = {
@@ -133,6 +179,7 @@ export async function dispatchToOpenClaw(
     deliveredMediaUrls,
     deliveredTexts,
     log: dlog,
+    inboundMessageId: envelope.messageId,
     deliverReply,
   };
 
@@ -146,17 +193,19 @@ export async function dispatchToOpenClaw(
         });
       } catch { /* best-effort */ }
     }
-    await adapters.dispatchReply!({
+    await withDispatchRetry('dispatchReply', () => adapters.dispatchReply!({
       ctx: ctxPayload,
       cfg,
+      // 走低层派发：核心必须先过 queue policy 再等活跃 run，steer 才可能注入
+      dispatchReplyFromConfig: adapters.lowLevelDispatch ?? undefined,
       dispatcherOptions: {
         deliver: (payload: DeliverPayload, info?: DeliverInfo) =>
           deliverDispatchPayload(payload, info, deliverState),
       },
       replyOptions,
-    });
+    }), dlog);
   } else {
-    await adapters.inboundRun!({
+    await withDispatchRetry('inboundRun', () => adapters.inboundRun!({
       channel: 'qqbot',
       accountId: route.accountId,
       raw: envelope,
@@ -190,6 +239,7 @@ export async function dispatchToOpenClaw(
             return adapters.dispatchReply!({
               ctx: ctxPayload,
               cfg,
+              dispatchReplyFromConfig: adapters.lowLevelDispatch ?? undefined,
               dispatcherOptions: {
                 deliver: (payload: DeliverPayload, info?: DeliverInfo) =>
                   deliverDispatchPayloadSafe(payload, info, deliverState),
@@ -199,7 +249,7 @@ export async function dispatchToOpenClaw(
           },
         }),
       },
-    });
+    }), dlog);
   }
 
   dlog?.debug(`inboundRun completed sessionKey=${route.sessionKey}`);

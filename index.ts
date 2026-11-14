@@ -18,6 +18,9 @@ import { verifyRuntimeContract } from './src/adapter/contract.js';
 
 let registered = false;
 
+/** 本地构建标记：用于在网关日志里确认实际加载的是哪一版（含哪些本地修正）。 */
+const LOCAL_BUILD_TAG = '2.0.4 (c2c-steer, dedupe-10m, msgid-fallback, ledger-token, stream-lock)';
+
 const plugin = {
   id: 'openclaw-qqbot',
   name: 'QQ Bot',
@@ -25,6 +28,7 @@ const plugin = {
   configSchema: emptyPluginConfigSchema(),
   register(api: OpenClawPluginApi) {
     setQQBotRuntime(api.runtime);
+    console.log(`[openclaw-qqbot] loaded build ${LOCAL_BUILD_TAG}`);
 
     if (!registered) {
       registered = true;

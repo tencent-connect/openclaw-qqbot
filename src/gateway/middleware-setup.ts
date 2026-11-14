@@ -28,6 +28,7 @@ import { createPolicyInjector } from '../middleware/policy-injector.js';
 import { getHistoryStore, historyGroupKey } from '../features/history-store.js';
 import { dynamicAccessControl } from '../middleware/access-control.js';
 import { stripMentionText } from '../utils/mention.js';
+import { ttlDedup } from './ttl-dedup.js';
 
 export interface MiddlewareSetupOptions {
   /** 获取 runtime */
@@ -42,7 +43,13 @@ export function setupMiddlewares(bot: QQBot, account: ResolvedQQBotAccount, opts
   bot.use(errorHandler());
 
   // 2. 消息过滤：bot 回声 + 消息去重
-  bot.use(messageFilter({ skipSelfEcho: false }));
+  //    QQ 在断线重连（RESUMED）或事件重放时会再次推送同一 messageId。
+  //    ⚠️ SDK messageFilter 的 windowMs 不是 TTL 闸门（只判 seen.has(id)，窗口仅用于超限淘汰），
+  //    给它传 10 分钟并不会改变去重语义，所以时间窗去重由 ttlDedup 自己实现。
+  bot.use(ttlDedup({ windowMs: 10 * 60_000, maxSize: 5000 }));
+  //    dedup: false — SDK 的 seen 只判 has(id)、不看过期时间，只在条数超限时淘汰；
+  //    留着它会把 ttlDedup 已经放行的重放（窗口外）再次丢掉，使 TTL 语义失效。
+  bot.use(messageFilter({ skipSelfEcho: false, dedup: false }));
 
   // 3. 动态策略注入 — 每条消息注入 ctx.state.policy
   //    后续 dynamicAccessControl / mentionGate / historyBuffer 自动读取
@@ -89,7 +96,13 @@ export function setupMiddlewares(bot: QQBot, account: ResolvedQQBotAccount, opts
   //       （typingIndicator/quoteRef/attachmentProcessor/... 直到 bot.on("message")）
   //     - 合并时清除 assembledBody 让 dispatch.ts 用合并后 content 重建
   //     - 超时后 abort 处理链（取消 LLM 调用），释放锁并排空缓冲
-  bot.use(concurrencyGuard({
+  //
+  //     ⚠️ 私聊（c2c）不套这层：OpenClaw 侧 messages.queue.mode=steer 要求新消息在上一轮
+  //     run 还在跑时就抵达核心，核心才会把它注入活跃 run。merge 策略会把消息压在 buffer 里、
+  //     等 run 结束后才放行，核心永远看到 isActive=false，steer 因此从不触发，表现为
+  //     “补充要求被攒到这一轮结束才响应”。
+  //     群聊保持 merge：核心对 room event 本就不做 steer，合并还能减少平台侧冲突。
+  const guard = concurrencyGuard({
     strategy: 'merge',
     maxQueue: 50,
     maxProcessingMs: account.processingTimeoutMs,
@@ -115,7 +128,30 @@ export function setupMiddlewares(bot: QQBot, account: ResolvedQQBotAccount, opts
 
       return last;
     },
-  }));
+  });
+  bot.use(async (ctx, next) => {
+    if (ctx.message.replyTarget.scope === 'c2c') {
+      // c2c 不进 guard，guard 里的看门狗（maxProcessingMs 到点 ctx.abort）也就用不上。
+      // 这里复刻同样的语义，避免私聊处理链卡死后没人中断、拖住后续消息与 streaming。
+      const timeoutMs = account.processingTimeoutMs;
+      if (!timeoutMs || timeoutMs <= 0) {
+        await next();
+        return;
+      }
+      const timer = setTimeout(() => {
+        ctx.log.warn?.(`[concurrency] aborting active c2c chain after ${timeoutMs}ms`);
+        ctx.abort('concurrency:processing-timeout');
+      }, timeoutMs);
+      timer.unref?.();
+      try {
+        await next();
+      } finally {
+        clearTimeout(timer);
+      }
+      return;
+    }
+    await guard(ctx, next);
+  });
 
   // 11. C2C 输入状态指示器
   bot.use(typingIndicator());

@@ -15,6 +15,7 @@ import {
   type DispatchDeliverState,
   type StreamTextOwner,
 } from '../src/dispatch/dispatch-deliver.js';
+import { resetOutboundLedger } from '../src/dispatch/send-ledger.js';
 
 let passed = 0;
 let failed = 0;
@@ -232,6 +233,68 @@ await test('kind=final after a block still forwards only new media', async () =>
   assert.deepEqual(replies[1]?.payload.mediaUrls, ['https://cdn/b.png']);
 });
 
+console.log('\n=== ledger + captions ===');
+
+await test('final 带媒体时重复字幕只跳过文本，媒体照常发送', async () => {
+  resetOutboundLedger();
+  const first = createState();
+  await deliverDispatchPayload(
+    { text: 'same caption', mediaUrl: 'https://cdn/a.png' },
+    { kind: 'final' },
+    first.state,
+  );
+
+  const second = createState();
+  await deliverDispatchPayload(
+    { text: 'same caption', mediaUrl: 'https://cdn/b.png' },
+    { kind: 'final' },
+    second.state,
+  );
+
+  assert.equal(second.replies.length, 1);
+  assert.equal(second.replies[0]?.payload.text, undefined);
+  assert.equal(second.replies[0]?.payload.mediaUrl, 'https://cdn/b.png');
+});
+
+await test('attachment-only final 仍然进入 deliverReply', async () => {
+  resetOutboundLedger();
+  const { state, replies } = createState();
+  const payload = {
+    attachments: [{ path: '/tmp/a.png' }],
+  } as unknown as DeliverPayload;
+  await deliverDispatchPayload(payload, { kind: 'final' }, state);
+  assert.equal(replies.length, 1);
+  assert.deepEqual((replies[0]?.payload as any).attachments, [{ path: '/tmp/a.png' }]);
+});
+
+await test('纯重复 final 文本不再发送', async () => {
+  resetOutboundLedger();
+  const first = createState();
+  await deliverDispatchPayload({ text: 'dup final' }, { kind: 'final' }, first.state);
+
+  const second = createState();
+  await deliverDispatchPayload({ text: 'dup final' }, { kind: 'final' }, second.state);
+  assert.equal(second.replies.length, 0);
+});
+
+await test('final 发送失败会释放账本占位，下一次可以重发', async () => {
+  resetOutboundLedger();
+  const failing = createState({
+    deliverReply: async () => {
+      throw new Error('qq reject');
+    },
+  });
+  await assert.rejects(
+    () => deliverDispatchPayload({ text: 'retry final' }, { kind: 'final' }, failing.state),
+    /qq reject/,
+  );
+
+  const ok = createState();
+  await deliverDispatchPayload({ text: 'retry final' }, { kind: 'final' }, ok.state);
+  assert.equal(ok.replies.length, 1);
+  assert.equal(ok.replies[0]?.payload.text, 'retry final');
+});
+
 console.log('\n=== helpers ===');
 
 await test('formatLogTextPreview shows delivered text and clips long payloads', () => {
@@ -251,6 +314,32 @@ await test('filterDeliveredMedia drops already forwarded urls', () => {
   );
   assert.equal(filtered.mediaUrl, undefined);
   assert.deepEqual(filtered.mediaUrls, ['https://cdn/b.png']);
+});
+
+await test('filterDeliveredMedia drops already delivered attachments too', () => {
+  const filtered = filterDeliveredMedia(
+    {
+      text: 'caption',
+      attachments: [
+        { path: '/tmp/a.png', type: 'image' },
+        { url: 'https://cdn/b.png' },
+        { path: '/tmp/c.png' },
+      ],
+    },
+    new Set(['/tmp/a.png', 'https://cdn/b.png']),
+  ) as unknown as { attachments?: unknown[] };
+  assert.deepEqual(filtered.attachments, [{ path: '/tmp/c.png' }]);
+});
+
+await test('filterDeliveredMedia keeps attachments when nothing matches', () => {
+  const payload = {
+    text: 'caption',
+    attachments: [{ path: '/tmp/a.png' }],
+  };
+  const filtered = filterDeliveredMedia(payload, new Set(['/tmp/zzz.png'])) as unknown as {
+    attachments?: unknown[];
+  };
+  assert.deepEqual(filtered.attachments, [{ path: '/tmp/a.png' }]);
 });
 
 await test('deliverDispatchPayloadSafe swallows deliver errors', async () => {
