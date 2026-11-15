@@ -25,10 +25,15 @@ export interface ResolvedQQBotAccount {
   secretSource: "config" | "file" | "env" | "none";
   /** 系统提示词 */
   systemPrompt?: string;
-  /** 图床服务器公网地址 */
-  imageServerBaseUrl?: string;
   /** 是否支持 markdown 消息（默认 true） */
   markdownSupport: boolean;
+  /** User-Agent 尾部追加内容 */
+  userAgentSuffix: string;
+  /**
+   * 单条消息最大处理时间（ms）。超时后 concurrencyGuard 会 abort 处理链，
+   * 释放锁并排空缓冲消息。0 表示不限制。默认 0（不限制）。
+   */
+  processingTimeoutMs: number;
   config: QQBotAccountConfig;
 }
 
@@ -57,6 +62,15 @@ export interface GroupConfig {
   historyLimit?: number;
 }
 
+/** 消息接收传输方式 */
+export type TransportMode = "websocket" | "webhook";
+
+/** Webhook 传输配置 */
+export interface WebhookTransportConfig {
+  /** 监听路径（默认 /qqbot/webhook） */
+  path?: string;
+}
+
 /**
  * QQ Bot 账户配置
  */
@@ -66,8 +80,12 @@ export interface QQBotAccountConfig {
   appId?: string;
   clientSecret?: string;
   clientSecretFile?: string;
-  dmPolicy?: "open" | "pairing" | "allowlist";
+  dmPolicy?: "open" | "pairing" | "allowlist" | "disabled";
   allowFrom?: string[];
+  /** 消息接收传输方式：websocket（默认）| webhook */
+  transport?: TransportMode;
+  /** webhook 传输配置（transport="webhook" 时生效） */
+  webhook?: WebhookTransportConfig;
   /** 群消息策略（默认 allowlist） */
   groupPolicy?: GroupPolicy;
   /** 群白名单（groupPolicy 为 allowlist 时生效） */
@@ -76,8 +94,6 @@ export interface QQBotAccountConfig {
   groups?: Record<string, GroupConfig>;
   /** 系统提示词，会添加在用户消息前面 */
   systemPrompt?: string;
-  /** 图床服务器公网地址，用于发送图片，例如 http://your-ip:18765 */
-  imageServerBaseUrl?: string;
   /** 是否支持 markdown 消息（默认 true，设为 false 可禁用） */
   markdownSupport?: boolean;
   /**
@@ -98,7 +114,7 @@ export interface QQBotAccountConfig {
   urlDirectUpload?: boolean;
   /**
    * /bot-upgrade 指令返回的升级指引网址
-   * 默认: https://doc.weixin.qq.com/doc/w3_AKEAGQaeACgCNHrh1CbHzTAKtT2gB?scode=AJEAIQdfAAozxFEnLZAKEAGQaeACg
+   * 默认: https://docs.qq.com/doc/DSGxOZk1oVnVKVkpq
    */
   upgradeUrl?: string;
   /**
@@ -115,6 +131,12 @@ export interface QQBotAccountConfig {
    */
   upgradePkg?: string;
   /**
+   * 群消息是否默认需要 @机器人才响应（默认 true）
+   * 优先级低于 groups.{groupId}.requireMention 和 groups."*".requireMention
+   * 设为 false 时，所有群默认无需 @ 即触发回复（仍可被群级配置覆盖）
+   */
+  defaultRequireMention?: boolean;
+  /**
    * 出站消息合并回复（debounce）配置
    * 当短时间内收到多次 deliver 时，将文本合并为一条消息发送，避免消息轰炸
    */
@@ -123,11 +145,36 @@ export interface QQBotAccountConfig {
    * 是否启用流式消息（默认 false）
    * 启用后，AI 的回复会以流式形式逐步显示在 QQ 聊天中，
    * 用户可以看到文字逐字出现的打字机效果。
-   * 设置为 true 可开启流式消息。
-   * 
+   *
+   * 兼容布尔值和对象格式，对齐框架 schema：
+   *   - true / false         旧版布尔格式（自动转换为对象）
+   *   - { mode: "partial" }  开启（对齐 StreamingMode.partial）
+   *   - { mode: "off" }      关闭
+   *
    * 注意：仅 C2C（私聊）支持流式消息 API。
    */
-  streaming?: boolean;
+  streaming?: boolean | { mode: 'partial' | 'off' };
+  /**
+   * STT (语音转文字) 配置
+   * 配置后，收到语音消息时会自动调用 STT 服务转录为文字
+   */
+  stt?: STTChannelConfig;
+  /**
+   * 单条消息最大处理时间（毫秒）。
+   * 超时后 concurrencyGuard 会 abort 处理链（取消 LLM 调用、工具执行等），
+   * 释放并发锁并排空缓冲消息。
+   *
+   * 设为 0 表示不限制超时。默认 0（不限制）。
+   *
+   * 可通过环境变量 OPENCLAW_PROCESSING_TIMEOUT_MS 覆盖全局默认值，
+   * 账户级配置优先级高于环境变量。
+   */
+  processingTimeoutMs?: number;
+  /**
+   * User-Agent 尾部追加内容（用于私有化部署标识等场景）
+   * 追加在 `QQBotPlugin/{version} (Node/{nodeVersion}; {os}; OpenClaw/{version})` 之后
+   */
+  userAgentSuffix?: string;
 }
 
 /**
@@ -179,6 +226,22 @@ export interface AudioFormatPolicy {
    * 当禁用时，非原生格式的音频会 fallback 到 sendDocument（文件发送）
    */
   transcodeEnabled?: boolean;
+}
+
+/**
+ * STT (语音转文字) 配置
+ */
+export interface STTChannelConfig {
+  /** 是否启用 STT（默认 true，配置了 baseUrl+apiKey 即自动启用） */
+  enabled?: boolean;
+  /** STT 服务提供商 ID（对应 models.providers 中的 key，默认 "openai"） */
+  provider?: string;
+  /** STT API 地址（如 https://api.openai.com/v1） */
+  baseUrl?: string;
+  /** STT API 密钥 */
+  apiKey?: string;
+  /** STT 模型名称（默认 "whisper-1"） */
+  model?: string;
 }
 
 /**

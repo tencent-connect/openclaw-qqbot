@@ -24,7 +24,7 @@ import {
   listKnownUsers, 
   getKnownUsersStats,
   broadcastMessage,
-} from "../src/proactive.js";
+} from "../src/features/proactive.js";
 import type { ResolvedQQBotAccount } from "../src/types.js";
 import * as fs from "node:fs";
 import * as path from "node:path";

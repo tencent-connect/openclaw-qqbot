@@ -78,24 +78,39 @@ declare module "openclaw/plugin-sdk" {
   export interface PluginRuntime {
     /** OpenClaw 框架版本号，如 "2026.3.31" */
     version: string;
-    /** 获取当前配置 */
-    getConfig(): OpenClawConfig;
-    /** 更新配置 */
-    setConfig(config: OpenClawConfig): void;
-    /** 获取数据目录路径 */
-    getDataDir(): string;
-    /** Channel 接口 - 使用 any 类型以兼容 SDK 内部复杂类型 */
+    /** 配置访问（运行时 config 在 config.current()，非顶层 getConfig()） */
+    config?: {
+      /** 获取当前运行时配置快照（只读） */
+      current(): OpenClawConfig;
+    };
+    /** Channel 接口 */
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     channel?: any;
-    /** 日志函数 */
+    /** 日志函数（旧版，建议使用 logging.getChildLogger） */
     log: {
       info: (message: string, ...args: unknown[]) => void;
       warn: (message: string, ...args: unknown[]) => void;
       error: (message: string, ...args: unknown[]) => void;
       debug: (message: string, ...args: unknown[]) => void;
     };
-    /** 其他运行时方法 */
+    /** 结构化日志（框架自动追加 channel 前缀） */
+    logging: {
+      shouldLogVerbose: () => boolean;
+      getChildLogger: (
+        bindings?: Record<string, unknown>,
+        opts?: { level?: string },
+      ) => RuntimeLogger;
+    };
+    /** 其他运行时方法（不要假设 getConfig/getDataDir/setConfig 可用） */
     [key: string]: unknown;
+  }
+
+  /** 结构化日志器 */
+  export interface RuntimeLogger {
+    debug?: (message: string, meta?: Record<string, unknown>) => void;
+    info: (message: string, meta?: Record<string, unknown>) => void;
+    warn: (message: string, meta?: Record<string, unknown>) => void;
+    error: (message: string, meta?: Record<string, unknown>) => void;
   }
 
   // ============ 插件 API ============
@@ -219,7 +234,6 @@ declare module "openclaw/plugin-sdk" {
     tokenFile?: string;
     useEnv?: boolean;
     name?: string;
-    imageServerBaseUrl?: string;
     [key: string]: unknown;
   }
 
@@ -659,6 +673,63 @@ declare module "openclaw/plugin-sdk" {
 
   /** 规范化账户 ID */
   export function normalizeAccountId(accountId: string | undefined | null): string;
+}
+
+declare module "openclaw/plugin-sdk/setup" {
+  export interface ChannelSetupWizardStatus {
+    channelLabel: string;
+    configuredLabel: string;
+    unconfiguredLabel: string;
+    configuredHint?: string;
+    unconfiguredHint?: string;
+    configuredScore?: number;
+    unconfiguredScore?: number;
+    includeStatusLine?: boolean;
+    resolveConfigured: (params: { cfg: unknown; accountId: string }) => boolean;
+  }
+
+  export interface ChannelSetupWizard {
+    channel: string;
+    status: ChannelSetupWizardStatus;
+    /** 解析配置时使用哪个账户 ID：无账户时默认 'default' */
+    resolveAccountIdForConfigure?: (params: {
+      cfg: unknown;
+      prompter: unknown;
+      options?: unknown;
+      accountOverride?: string;
+      shouldPromptAccountIds: boolean;
+      listAccountIds: (cfg: unknown) => string[];
+      defaultAccountId: string;
+    }) => string | Promise<string>;
+    resolveShouldPromptAccountIds?: (params: {
+      cfg: unknown;
+      options?: unknown;
+      shouldPromptAccountIds: boolean;
+    }) => boolean;
+    credentials?: Array<{ id: string; label: string }>;
+    textInputs?: Array<{ id: string; label: string; placeholder?: string }>;
+    onStatusChange?: (params: { cfg: unknown }) => void | Promise<void>;
+    configure?: (params: { cfg: unknown; accountId: string; prompter: unknown; runtime: unknown }) => Promise<unknown>;
+    finalize: (params: { cfg: unknown; accountId: string; prompter: unknown; runtime: unknown }) => Promise<unknown>;
+    enable?: (cfg: unknown) => unknown;
+    disable?: (cfg: unknown) => unknown;
+  }
+
+  export function createStandardChannelSetupStatus(
+    opts: ChannelSetupWizardStatus,
+  ): ChannelSetupWizardStatus;
+
+  export function setSetupChannelEnabled(
+    cfg: unknown,
+    channel: string,
+    enabled: boolean,
+  ): void;
+
+  export const DEFAULT_ACCOUNT_ID: string;
+}
+
+declare module "openclaw/plugin-sdk/setup-tools" {
+  export function formatDocsLink(href: string, text?: string): string;
 }
 
 declare module "openclaw/plugin-sdk/approval-runtime" {

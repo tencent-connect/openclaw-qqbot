@@ -13,7 +13,6 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import * as fs from "node:fs";
-import { execFile } from "node:child_process";
 
 // ============ 基础平台信息 ============
 
@@ -299,12 +298,35 @@ export function detectFfmpeg(): Promise<string | null> {
   return _ffmpegCheckPromise;
 }
 
-/** 测试可执行文件是否能正常运行 */
-function testExecutable(cmd: string, args: string[]): Promise<boolean> {
+/** 测试可执行文件是否在系统 PATH 中可访问 */
+function testExecutable(cmd: string, _args: string[]): Promise<boolean> {
   return new Promise((resolve) => {
-    execFile(cmd, args, { timeout: 5000 }, (err) => {
-      resolve(!err);
-    });
+    // 直接路径检查
+    if (path.isAbsolute(cmd) || cmd.includes("/") || cmd.includes("\\")) {
+      try {
+        fs.accessSync(cmd, fs.constants.X_OK);
+        resolve(true);
+        return;
+      } catch {
+        resolve(false);
+        return;
+      }
+    }
+
+    // PATH 查找
+    const pathEnv = process.env.PATH || "";
+    const paths = pathEnv.split(path.delimiter);
+    for (const p of paths) {
+      const cmdPath = path.join(p, cmd);
+      try {
+        fs.accessSync(cmdPath, fs.constants.X_OK);
+        resolve(true);
+        return;
+      } catch {
+        // 继续搜索
+      }
+    }
+    resolve(false);
   });
 }
 
@@ -328,7 +350,9 @@ export async function checkSilkWasmAvailable(): Promise<boolean> {
   if (_silkWasmAvailable !== null) return _silkWasmAvailable;
 
   try {
-    const { isSilk } = await import("silk-wasm");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const silkWasm = await import("silk-wasm" as string) as any;
+    const isSilk = silkWasm.isSilk;
     // 用一个空 buffer 快速测试 WASM 是否能加载
     isSilk(new Uint8Array(0));
     _silkWasmAvailable = true;

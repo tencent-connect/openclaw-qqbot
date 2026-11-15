@@ -399,7 +399,8 @@ cleanup_pack() {
 #  Level 2: npm pack 下载 + 解压 + openclaw plugins install <目录>
 #  绕过 ClawHub 下载，保留 openclaw CLI 的原子部署、验证、完整 install record
 #  注意：传目录路径而非 tarball 路径，因为 openclaw 的 installPluginFromArchive
-#  存在 bug（漏传 dangerouslyForceUnsafeInstall），而 installPluginFromDir 正确传递
+#  历史上存在漏传安装参数（dangerouslyForceUnsafeInstall）的 bug；
+#  传目录可让 installPluginFromDir 正确接收 --force（非 ClawHub 来源确认）等参数
 # ============================================================================
 npm_pack_native_install() {
     echo ""
@@ -411,8 +412,8 @@ npm_pack_native_install() {
     npm_pack_download || return 1
 
     # 先解压再传目录路径给 openclaw，而非直接传 tarball 路径
-    # 原因：openclaw installPluginFromArchive 漏传 --dangerously-force-unsafe-install，
-    #       installPluginFromDir 正确传递，传目录可绕过此 bug
+    # 原因：openclaw installPluginFromArchive 历史上漏传安装参数，
+    #       installPluginFromDir 正确接收 --force 等参数，传目录更可靠
     echo "  [L2 2/4] 解压 tarball..."
     local extract_dir
     extract_dir="$(mktemp -d "${TMPDIR:-/tmp}/.qqbot-extract-XXXXXX")"
@@ -451,7 +452,7 @@ npm_pack_native_install() {
     ensure_valid_cwd
     local rc=0
     run_with_timeout "$INSTALL_TIMEOUT" "plugins install (local dir)" \
-        openclaw plugins install "$package_dir" $FORCE_UNSAFE_FLAG 2>&1 || rc=$?
+        openclaw plugins install "$package_dir" $INSTALL_FORCE_FLAG $FORCE_UNSAFE_FLAG $ACCEPT_CAPABILITIES_FLAG 2>&1 || rc=$?
 
     rm -rf "$extract_dir" 2>/dev/null || true
 
@@ -584,10 +585,27 @@ acquire_upgrade_lock
 
 OPENCLAW_VERSION="$(openclaw --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1 || true)"
 
-# OpenClaw ≥2026.3.30 引入安全扫描阻断 + --dangerously-force-unsafe-install 参数
-# 该参数仅 plugins install 支持，plugins update 不支持
+# --force：确认非 ClawHub 来源（本地路径/第三方 npm）+ 覆盖已存在插件。
+#   2026.4.5 起引入；2026.6.2 起（安全扫描移除后）是绕过非交互式来源确认的必需参数，
+#   否则本地路径安装会报 "Install cancelled; rerun with --force"。
+INSTALL_FORCE_FLAG=""
+if [ -n "$OPENCLAW_VERSION" ] && version_gte "$OPENCLAW_VERSION" "2026.4.5"; then
+    INSTALL_FORCE_FLAG="--force"
+fi
+
+# --accept-capabilities：2026.8.0 起引入 capability consent，
+#   插件在 openclaw.plugin.json 中声明的能力需显式同意，否则报 "requires capability consent"。
+ACCEPT_CAPABILITIES_FLAG=""
+if [ -n "$OPENCLAW_VERSION" ] && version_gte "$OPENCLAW_VERSION" "2026.8.0"; then
+    ACCEPT_CAPABILITIES_FLAG="--accept-capabilities"
+fi
+
+# --dangerously-force-unsafe-install：仅 2026.3.30 ~ 2026.6.1 内置安全扫描时代用于绕过扫描；
+#   2026.6.2 起安全扫描已移除（PR #89516），该参数废弃为 no-op（仅打印 deprecation 警告）。
+# 该参数仅 plugins install 支持，plugins update 不支持；update 决策也依赖其非空判断。
 FORCE_UNSAFE_FLAG=""
-if [ -n "$OPENCLAW_VERSION" ] && version_gte "$OPENCLAW_VERSION" "2026.3.30"; then
+if [ -n "$OPENCLAW_VERSION" ] && version_gte "$OPENCLAW_VERSION" "2026.3.30" \
+        && ! version_gte "$OPENCLAW_VERSION" "2026.6.2"; then
     FORCE_UNSAFE_FLAG="--dangerously-force-unsafe-install"
 fi
 
@@ -759,12 +777,14 @@ INSTALL_SPEC="${INSTALL_RECORD_INFO#*|}"
 HAS_PLUGIN_DIR=false
 [ -d "$EXTENSIONS_DIR/$PLUGIN_ID" ] && [ -f "$OLD_PKG" ] && HAS_PLUGIN_DIR=true
 
-# 决策：配置有记录 + 目录存在 + 未指定版本 + <3.30 → update，其他 → install
-# ≥3.30 的 update 会被安全扫描阻断（update 不支持 --dangerously-force-unsafe-install），直接走 install
+# 决策：配置有记录 + 目录存在 + 未指定版本 → 优先 update，其他 → install
+# 仅 2026.3.30~2026.6.1（FORCE_UNSAFE_FLAG 非空）的 update 会被安全扫描阻断
+# （update 不支持 --dangerously-force-unsafe-install），直接走 install；
+# 2026.6.2 起安全扫描已移除，恢复走 update。
 USE_UPDATE=false
 if [ "$HAS_INSTALL_RECORD" = "yes" ] && [ "$HAS_PLUGIN_DIR" = "true" ] && [ -z "$TARGET_VERSION" ]; then
     if [ -n "$FORCE_UNSAFE_FLAG" ]; then
-        log "install_decision" "info" "  [检测] 配置 ✓ | 目录 ✓ | openclaw ≥3.30 → 跳过 update，直接 install（安全扫描兼容）" "decision=install" "reason=force_unsafe"
+        log "install_decision" "info" "  [检测] 配置 ✓ | 目录 ✓ | openclaw 3.30~6.1 → 跳过 update，直接 install（安全扫描兼容）" "decision=install" "reason=force_unsafe"
     else
         USE_UPDATE=true
         log "install_decision" "info" "  [检测] 配置 ✓ | 目录 ✓ | 未指定版本 → update" "decision=update"
@@ -804,7 +824,7 @@ if [ "$USE_UPDATE" = "true" ]; then
     echo "  [Level 1] 尝试 openclaw plugins update...（${UPDATE_TIMEOUT}s 超时）"
     UPDATE_RC=0
     UPDATE_OUTPUT="$(run_with_timeout "$UPDATE_TIMEOUT" \
-        "plugins update" openclaw plugins update "$PLUGIN_ID" 2>&1)" || UPDATE_RC=$?
+        "plugins update" openclaw plugins update "$PLUGIN_ID" $ACCEPT_CAPABILITIES_FLAG 2>&1)" || UPDATE_RC=$?
     echo "$UPDATE_OUTPUT"
 
     if [ $UPDATE_RC -eq 0 ]; then
@@ -884,7 +904,7 @@ if [ "$UPGRADE_OK" != "true" ]; then
     RC=0
     run_with_timeout "$INSTALL_TIMEOUT" \
         "plugins install" openclaw plugins install "$INSTALL_SRC" --pin \
-        $FORCE_UNSAFE_FLAG 2>&1 || RC=$?
+        $INSTALL_FORCE_FLAG $FORCE_UNSAFE_FLAG $ACCEPT_CAPABILITIES_FLAG 2>&1 || RC=$?
 
     if [ $RC -eq 0 ] && [ -f "$EXTENSIONS_DIR/$PLUGIN_ID/package.json" ]; then
         mark_success; log "level1_install" "success" "  ✅ Level 1 install 成功" "method=install"
@@ -929,22 +949,53 @@ NEW_VERSION=""; [ -f "$TARGET_DIR/package.json" ] && NEW_VERSION="$(read_pkg_ver
 PREFLIGHT_OK=true
 [ -z "$NEW_VERSION" ] && echo "  ❌ 无法读取版本号" && PREFLIGHT_OK=false || echo "  ✅ 版本: $NEW_VERSION"
 
-ENTRY=""; for f in "dist/index.js" "index.js"; do [ -f "$TARGET_DIR/$f" ] && ENTRY="$f" && break; done
+ENTRY=""; for f in "dist/index.cjs" "dist/index.js" "index.js"; do [ -f "$TARGET_DIR/$f" ] && ENTRY="$f" && break; done
 [ -z "$ENTRY" ] && echo "  ❌ 缺少入口文件" && PREFLIGHT_OK=false || echo "  ✅ 入口: $ENTRY"
 
+# 检测构建模式：bundled (tsup dist/index.cjs) vs unbundled (dist/src/ 独立文件)
+# 优先看 dist/src/ 是否存在；存在 → unbundled；否则依赖入口文件大小判断
+IS_BUNDLED=false
 if [ -d "$TARGET_DIR/dist/src" ]; then
-    JS_COUNT=$(find "$TARGET_DIR/dist/src" -name "*.js" -type f 2>/dev/null | wc -l | tr -d ' ')
-    echo "  ✅ dist/src/ 含 ${JS_COUNT} 个 JS"
-    [ "$JS_COUNT" -lt 5 ] && echo "  ❌ JS 数量异常偏少" && PREFLIGHT_OK=false
-else
-    echo "  ❌ 缺少 dist/src/"; PREFLIGHT_OK=false
+    IS_BUNDLED=false
+elif [ -f "$TARGET_DIR/$ENTRY" ]; then
+    BUNDLE_SIZE=$(wc -c < "$TARGET_DIR/$ENTRY" 2>/dev/null || echo "0")
+    # bundled 输出通常 > 200KB，unbundled 入口 < 50KB
+    [ "$BUNDLE_SIZE" -gt 200000 ] 2>/dev/null && IS_BUNDLED=true
 fi
 
-MISS=""
-for m in "dist/src/gateway.js" "dist/src/api.js" "dist/src/admin-resolver.js"; do
-    [ ! -f "$TARGET_DIR/$m" ] && MISS="$MISS $m"
-done
-[ -n "$MISS" ] && echo "  ❌ 缺少:$MISS" && PREFLIGHT_OK=false || echo "  ✅ 关键模块完整"
+if [ "$IS_BUNDLED" = "true" ]; then
+    echo "  ✅ bundled 构建 (${BUNDLE_SIZE} bytes)"
+
+    # 内联验证：bundle 中 grep 关键导出
+    BUNDLE_MISS=""
+    for sig in "GatewayConnection" "dispatchToOpenClaw" "qqbotPlugin" "sendText" "sendMedia"; do
+        if ! grep -qF "$sig" "$TARGET_DIR/$ENTRY" 2>/dev/null; then
+            BUNDLE_MISS="$BUNDLE_MISS $sig"
+        fi
+    done
+    [ -n "$BUNDLE_MISS" ] && echo "  ❌ bundle 缺少签名:$BUNDLE_MISS" && PREFLIGHT_OK=false || echo "  ✅ 关键模块签名完整"
+
+    # ws 依赖应该被 tsup noExternal 打包进 bundle
+    if grep -qF "ws" "$TARGET_DIR/$ENTRY" 2>/dev/null; then
+        echo "  ✅ ws bundled"
+    else
+        echo "  ⚠️  ws 未打包"
+    fi
+else
+    if [ -d "$TARGET_DIR/dist/src" ]; then
+        JS_COUNT=$(find "$TARGET_DIR/dist/src" -name "*.js" -type f 2>/dev/null | wc -l | tr -d ' ')
+        echo "  ✅ dist/src/ 含 ${JS_COUNT} 个 JS"
+        [ "$JS_COUNT" -lt 5 ] && echo "  ❌ JS 数量异常偏少" && PREFLIGHT_OK=false
+    else
+        echo "  ❌ 缺少 dist/src/"; PREFLIGHT_OK=false
+    fi
+
+    MISS=""
+    for m in "dist/src/gateway.js" "dist/src/api.js" "dist/src/admin-resolver.js"; do
+        [ ! -f "$TARGET_DIR/$m" ] && MISS="$MISS $m"
+    done
+    [ -n "$MISS" ] && echo "  ❌ 缺少:$MISS" && PREFLIGHT_OK=false || echo "  ✅ 关键模块完整"
+fi
 
 if [ -d "$TARGET_DIR/node_modules" ]; then
     BOK=true

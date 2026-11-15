@@ -1,11 +1,12 @@
 {
   "name": "@tencent-connect/openclaw-qqbot",
-  "version": "1.7.1",
+  "version": "2.0.4",
+  "description": "QQ Bot channel plugin for OpenClaw",
   "publishConfig": {
     "access": "public"
   },
   "type": "module",
-  "main": "dist/index.js",
+  "main": "dist/index.cjs",
   "types": "dist/index.d.ts",
   "bin": {
     "openclaw-qqbot": "./bin/qqbot-cli.js",
@@ -20,6 +21,7 @@
     "index.ts",
     "preload.cjs",
     "tsconfig.json",
+    "tsup.config.ts",
     "openclaw.plugin.json"
   ],
   "openclaw": {
@@ -30,48 +32,30 @@
     "channel": {
       "id": "qqbot",
       "label": "QQ Bot"
-    },
-    "compat": {
-      "pluginApi": ">=2026.4.27",
-      "minGatewayVersion": ">=2026.4.27"
-    },
-    "build": {
-      "openclawVersion": "2026.4.27"
     }
   },
   "scripts": {
-    "build": "tsc || true",
-    "postbuild": "node -e \"const fs=require('fs'),p=require('path'),ext=p.join(require('os').homedir(),'.openclaw/extensions/openclaw-qqbot');if(fs.existsSync(ext)&&!fs.lstatSync(ext).isSymbolicLink()){const d=p.join(ext,'dist'),pr=p.join(ext,'preload.cjs');fs.cpSync('dist',d,{recursive:true});fs.copyFileSync('preload.cjs',pr);console.log('[postbuild] synced to',ext)}\"",
-    "dev": "tsc --watch",
-    "prepack": "npm install --omit=dev",
-    "postinstall": "node scripts/postinstall-link-sdk.js 2>/dev/null || true"
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "lint:runtime": "npx tsx src/runtime-adapter/lint-runtime-access.ts"
   },
   "dependencies": {
-    "mpg123-decoder": "^1.0.3",
-    "silk-wasm": "^3.7.1",
-    "ws": "^8.18.0"
+    "@tencent-connect/qqbot-connector": "1.2.0",
+    "@tencent-connect/qqbot-nodejs": "^1.0.4"
   },
-  "bundledDependencies": [
-    "mpg123-decoder",
-    "silk-wasm",
-    "ws"
-  ],
   "devDependencies": {
-    "@types/node": "^20.0.0",
-    "@types/ws": "^8.5.0",
+    "@types/node": "^20.19.43",
+    "tsup": "^8.5.1",
     "typescript": "^5.9.3"
   },
   "peerDependencies": {
+    "@tencent-connect/qqbot-connector": "1.2.0",
     "openclaw": "*"
   },
   "homepage": "https://github.com/tencent-connect/openclaw-qqbot",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/tencent-connect/openclaw-qqbot.git"
-  },
-  "bundleDependencies": [
-    "mpg123-decoder",
-    "silk-wasm",
-    "ws"
-  ]
+  }
 }

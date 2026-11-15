@@ -4,6 +4,90 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/)。
 
+## [2.0.4] - 2026-09-11
+
+### 新增
+
+- **Send-only 网关降级**：出站 `sendText` / `sendMedia` / `sendVoice` / `sendVideo` 在机器人未运行时懒加载构建 send-only 网关（不含中间件、会话与引用索引），缓存复用，并在无网关日志时回退到真实 logger。
+
+### 变更
+
+- **拆分 dispatch 投递通道**：启用 block streaming，将 static-blocks / native-stream 投递拆分到独立的 `dispatch-deliver` 通道，新增 reply-options 事件订阅。
+- **`send-proactive` 脚本**：更新为指向迁移后的 `features/proactive` 模块。
+- **README**：安装/升级流程改为基于交互式向导（`npx -y @tencent-connect/openclaw-qqbot-cli@latest`）。
+
+### 改进
+
+- **调试日志**：在 debug 日志中预览出站文本，便于排查问题。
+
+### 修复
+
+- **升级脚本**：安装/更新时传递 `--accept-capabilities` 参数，适配 OpenClaw 2026.8.0+ 引入的 capability consent 校验（此前会报 "requires capability consent" 失败）。
+
+### 移除
+
+- 移除 README 中的 Star History 图表。
+
+---
+
+## [2.0.3] - 2026-08-25
+
+### 修复
+
+- 修复 `/bot-version` 指令仍返回旧 GitHub 仓库地址的问题。
+- 同步 `upgradeUrl` 配置项文档中的默认升级指引链接。
+
+---
+
+## [2.0.2] - 2026-08-25
+
+### 修复
+
+- 修复 `/bot-upgrade` 升级指引链接。
+
+---
+
+## [2.0.1] - 2026-08-09
+
+### 改进
+
+- 优化消息调度流程，提升调度稳定性与异常处理能力。
+- 放宽运行时能力校验，增强对不同 OpenClaw 版本的兼容性。
+
+---
+
+## [2.0.0] - 2026-07-13
+
+### 新增
+
+- **模块化分层架构**：代码重构为 12 个子模块（adapter / dispatch / gateway / middleware / outbound / transport 等），提升可维护性和扩展性。
+- **Runtime Adapter**：新增运行时适配层，支持多版本 OpenClaw SDK 自动适配，兼容低版本 OpenClaw。
+- **出站流水线**：统一出站分发管道（TTS 语音 → 媒体 → 文本 debounce），新增流式控制器、回复限速、出站文本清理（剥离 thinking 标签）。
+- **中间件层**：新增访问控制、附件处理、策略注入三个中间件，支持灵活编排。
+- **新增斜杠指令**：`/bot-pairing`（QR 码配对）。
+
+### 变更
+
+- 构建方式改为 `tsup` 预编译（`dist/index.cjs`），提升加载速度。
+- `qqbot_channel_api` 工具重命名为 `qqbot_platform_api`。
+- 依赖升级：`@tencent-connect/qqbot-connector` 1.2.0，新增 `@tencent-connect/qqbot-nodejs ^1.0.3`。
+
+### 改进
+
+- 启动时 runtime contract 预检，提前发现 API 缺失。
+- 统一日志体系（`PluginLogger`），支持前缀分级。
+- 新增 Markdown 表格分块和文本清理单元测试。
+
+---
+
+## [1.7.2] - 2026-06-05
+
+### 新增
+
+- **Webhook 传输模式**：新增 HTTP 回调入站方式，与 WebSocket 并列为两种可选传输模式。支持 Ed25519 签名鉴权，多账户场景下基于签名自动路由到对应账户。
+- **群聊 @触发规则灵活配置**：新增账户级 `defaultRequireMention` 字段，形成「具体群 > 通配符 `*` > 账户级 > 默认值」四级优先级链，可针对不同群设置仅@回复或自主发言。
+- **`/bot-group-allways` 指令**：运行时动态切换群响应模式（`on` / `off`），修改即时持久化到 `openclaw.json`，无需重启网关。
+
 ## [1.7.1] - 2026-04-10
 
 ### 修复

@@ -48,13 +48,40 @@ export function isReservedAddr(ip: string): boolean {
 
 const ALLOWED_SCHEMES = new Set(["http:", "https:"]);
 
+/** QQ 官方媒体/API 域名白名单，匹配时跳过 DNS 解析检查 */
+const QQ_TRUSTED_DOMAINS = new Set([
+  // QQ Bot API
+  "api.sgroup.qq.com",
+  "sandbox.api.sgroup.qq.com",
+  // QQ Bot Token
+  "bots.qq.com",
+  // QQ 多媒体上传/下载
+  "multimedia.nt.qq.com.cn",
+  "multimedia.nt.qq.com",
+  // QQ 群文件
+  "grouppro.grouppro.qq.com",
+]);
+
+/** 检查 hostname 是否匹配 QQ 白名单（支持子域名通配 *.example.com） */
+function isQQTrustedDomain(hostname: string): boolean {
+  if (QQ_TRUSTED_DOMAINS.has(hostname)) return true;
+  // 检查一级子域名：*.multimedia.nt.qq.com.cn
+  const dot = hostname.indexOf('.');
+  if (dot > 0) {
+    const parent = hostname.slice(dot + 1);
+    return QQ_TRUSTED_DOMAINS.has(parent);
+  }
+  return false;
+}
+
 /**
  * 校验远程 URL 是否可安全请求。
  *
  * 规则：
  * 1. 仅放行 http / https 协议
- * 2. 若 URL 直接携带 IP 则即时判定
- * 3. 若为域名则先做 DNS 解析，逐条检查解析结果
+ * 2. QQ 白名单域名直接放行（免 DNS 解析）
+ * 3. 若 URL 直接携带 IP 则即时判定
+ * 4. 若为域名则先做 DNS 解析，逐条检查解析结果
  *
  * @throws {Error} 当 URL 指向受限地址时
  */
@@ -69,6 +96,9 @@ export async function validateRemoteUrl(raw: string): Promise<void> {
 
   // 去掉 IPv6 方括号
   const host = url.hostname.replace(/^\[|\]$/g, "");
+
+  // QQ 官方域名 → 免 DNS 检查直接放行
+  if (isQQTrustedDomain(host)) return;
 
   if (net.isIP(host)) {
     assertPublicAddr(host, raw);

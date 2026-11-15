@@ -2,25 +2,32 @@
   "id": "openclaw-qqbot",
   "name": "OpenClaw QQ Bot",
   "description": "QQ Bot channel plugin with message support, cron jobs, and proactive messaging",
-  "channels": [
-    "qqbot"
-  ],
-  "skills": [
-    "skills/qqbot-channel",
-    "skills/qqbot-remind",
-    "skills/qqbot-media",
-    "skills/qqbot-upgrade"
-  ],
+  "channels": ["qqbot"],
+  "skills": ["skills/qqbot-channel", "skills/qqbot-remind", "skills/qqbot-upgrade"],
+  "contracts": {
+    "tools": ["qqbot_platform_api", "qqbot_remind"]
+  },
   "configSchema": {
     "type": "object",
-    "additionalProperties": false,
-    "properties": {}
+    "additionalProperties": true,
+    "properties": {
+      "appId": { "type": "string", "description": "QQ Bot AppID" },
+      "clientSecret": { "type": "string", "description": "QQ Bot AppSecret" }
+    }
   },
   "channelConfigs": {
     "qqbot": {
-      "preferOver": [
-        "qqbot"
-      ]
+      "schema": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "appId": { "type": "string", "description": "QQ Bot AppID" },
+          "clientSecret": { "type": "string", "description": "QQ Bot AppSecret" }
+        }
+      },
+      "label": "QQ Bot",
+      "description": "QQ Bot channel configuration with message support, cron jobs, and proactive messaging.",
+      "preferOver": ["qqbot"]
     }
   }
 }

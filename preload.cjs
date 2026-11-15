@@ -9,25 +9,28 @@
  */
 "use strict";
 
+const path = require("node:path");
+const fs = require("node:fs");
 const { ensurePluginSdkSymlink } = require("./scripts/link-sdk-core.cjs");
 
-// 1) 同步创建 symlink
+// 1) 同步创建 symlink（确保 openclaw/plugin-sdk 可解析）
 ensurePluginSdkSymlink(__dirname, "[preload]");
 
-// 2) Node 22 原生支持 CJS require() 加载 ESM 模块
-//    同步加载插件入口，确保框架同步检查 register/activate 时能找到
-const _pluginModule = require("./dist/index.js");
+// 2) 加载编译产物（向后兼容：优先 .cjs，fallback .js）
+const cjsPath = path.join(__dirname, "dist", "index.cjs");
+const jsPath = path.join(__dirname, "dist", "index.js");
 
-// 3) 展平 default export：框架检查 register/activate 在顶级属性
-//    ESM 的 export default 在 require() 后变成 { default: plugin, ... }
-const _default = _pluginModule.default;
-const merged = Object.assign({}, _pluginModule);
-if (_default && typeof _default === "object") {
-  for (const key of Object.keys(_default)) {
-    if (!(key in merged)) {
-      merged[key] = _default[key];
+if (fs.existsSync(cjsPath)) {
+  module.exports = require(cjsPath);
+} else {
+  // 兼容旧版 tsc 编译产物（ESM .js），需展平 default export
+  const _mod = require(jsPath);
+  const _default = _mod.default;
+  const merged = Object.assign({}, _mod);
+  if (_default && typeof _default === "object") {
+    for (const key of Object.keys(_default)) {
+      if (!(key in merged)) merged[key] = _default[key];
     }
   }
+  module.exports = merged;
 }
-
-module.exports = merged;

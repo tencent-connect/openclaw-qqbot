@@ -4,6 +4,90 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.0.4] - 2026-09-11
+
+### Added
+
+- **Send-only gateway fallback**: Outbound `sendText` / `sendMedia` / `sendVoice` / `sendVideo` now lazily construct a send-only gateway (no middleware, session, or ref-index) when the bot is not running, caching it for reuse and falling back to a real logger when no gateway log exists.
+
+### Changed
+
+- **Dispatch delivery lanes refactor**: Enabled block streaming and split static-blocks / native-stream delivery into a dedicated `dispatch-deliver` lane, adding reply-options event subscription.
+- **`send-proactive` script**: Updated to point at the relocated `features/proactive` module.
+- **README**: Reworked the installation/upgrade flow around the interactive wizard (`npx -y @tencent-connect/openclaw-qqbot-cli@latest`).
+
+### Improved
+
+- **Debug logging**: Preview outbound text in debug logs to aid troubleshooting.
+
+### Fixed
+
+- **Upgrade scripts**: Pass `--accept-capabilities` on install/update for OpenClaw 2026.8.0+, which introduced capability consent validation (previously failed with "requires capability consent").
+
+### Removed
+
+- Removed the Star History chart from README.
+
+---
+
+## [2.0.3] - 2026-08-25
+
+### Fixed
+
+- Fixed the `/bot-version` command still returning an outdated GitHub repository URL.
+- Synced the default upgrade guide URL in the `upgradeUrl` config documentation.
+
+---
+
+## [2.0.2] - 2026-08-25
+
+### Fixed
+
+- Fixed the `/bot-upgrade` upgrade guide link.
+
+---
+
+## [2.0.1] - 2026-08-09
+
+### Improved
+
+- Enhanced message dispatch stability with better handling and logging for skipped dispatches.
+- Relaxed runtime capability checks for broader OpenClaw version compatibility.
+
+---
+
+## [2.0.0] - 2026-07-13
+
+### Added
+
+- **Modular Layered Architecture**: Refactored codebase into 12 sub-modules (adapter / dispatch / gateway / middleware / outbound / transport, etc.) for better maintainability and extensibility.
+- **Runtime Adapter**: New runtime adaptation layer supporting automatic multi-version OpenClaw SDK compatibility, including older OpenClaw versions.
+- **Outbound Pipeline**: Unified outbound delivery pipeline (TTS voice → media → text debounce) with streaming controller, reply rate limiter, and outbound text sanitization (strips thinking tags).
+- **Middleware Layer**: Three new middlewares — access control, attachment processing, and policy injection — with flexible composition support.
+- **New Slash Command**: `/bot-pairing` (QR code pairing).
+
+### Changed
+
+- Build switched to `tsup` pre-compilation (`dist/index.cjs`) for faster loading.
+- `qqbot_channel_api` tool renamed to `qqbot_platform_api`.
+- Dependency upgrades: `@tencent-connect/qqbot-connector` 1.2.0, added `@tencent-connect/qqbot-nodejs ^1.0.3`.
+
+### Improved
+
+- Runtime contract pre-check at startup to detect missing APIs early.
+- Unified logging system (`PluginLogger`) with prefix levels.
+- Added Markdown table chunking and text sanitization unit tests.
+
+---
+
+## [1.7.2] - 2026-06-05
+
+### Added
+
+- **Webhook Transport Mode**: Added HTTP webhook inbound transport alongside WebSocket as an alternative transport mode. Supports Ed25519 signature verification with automatic account routing for multi-account setups.
+- **Flexible Group @Trigger Rules**: New account-level `defaultRequireMention` field introduces a 4-tier priority chain — per-group > wildcard `*` > account-level > default — allowing groups to be configured as @-only or autonomous.
+- **`/bot-group-allways` Command**: Toggle group response mode at runtime (`on` / `off`). Changes are persisted to `openclaw.json` instantly; no gateway restart required.
+
 ## [1.7.1] - 2026-04-10
 
 ### Fixed

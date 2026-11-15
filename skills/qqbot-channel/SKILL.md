@@ -1,12 +1,33 @@
 ---
 name: qqbot-channel
-description: QQ 频道管理技能。查询频道列表、子频道、成员、发帖、公告、日程等操作。使用 qqbot_channel_api 工具代理 QQ 开放平台 HTTP 接口，自动处理 Token 鉴权。当用户需要查看频道、管理子频道、查询成员、发布帖子/公告/日程时使用此技能。
+description: QQ 频道管理技能（非QQ群）。查询频道列表、子频道、成员、发帖、公告、日程等操作。使用 qqbot_platform_api 工具代理 QQ 开放平台 HTTP 接口，自动处理 Token 鉴权。仅用于 QQ 频道（Guild/Channel）。触发条件：用户提到「频道」「子频道」「guild」「channel」「帖子」「日程」「公告」。
 metadata: {"openclaw":{"emoji":"📡","requires":{"config":["channels.qqbot"]}}}
 ---
 
 # QQ 频道 API 请求指导
 
-`qqbot_channel_api` 是一个 QQ 开放平台 HTTP 代理工具，**自动填充鉴权 Token**。你只需要指定 HTTP 方法、API 路径、请求体和查询参数。
+> **本 Skill 仅处理 QQ 频道（Guild/Channel）操作。** 频道 ID 为纯数字，API 路径为 `/guilds/...` 和 `/channels/...`。
+
+`qqbot_platform_api` 是 QQ 开放平台统一 HTTP API 网关，**自动填充鉴权 Token**。你只需要指定 HTTP 方法、API 路径、请求体和查询参数即可调用频道相关接口。
+
+---
+
+## 🔀 适用范围（必读）
+
+QQ 频道是类似 Discord 的社区产品，层级结构为 **频道（Guild） → 子频道（Channel）**：
+
+| 层级 | 中文名 | 英文 | API 路径 | ID 格式 |
+|------|--------|------|----------|---------|
+| 顶层 | 频道 | Guild | `/guilds/{guild_id}` | 纯数字（如 `123456`） |
+| 次级 | 子频道 | Channel | `/channels/{channel_id}` | 纯数字（如 `789012`） |
+
+**核心特征**：
+- 频道内可以创建多个子频道（文字、语音、论坛、直播等）
+- 支持发帖、公告、日程等功能
+- 频道成员通过 `/guilds/{guild_id}/members` 管理
+- ID 为纯数字格式，API 路径以 `/guilds/` 或 `/channels/` 开头
+
+**触发关键词**：频道、子频道、guild、channel、帖子、日程、公告、论坛、频道成员
 
 ## 📚 详细参考文档
 
@@ -251,13 +272,14 @@ metadata: {"openclaw":{"emoji":"📡","requires":{"config":["channels.qqbot"]}}}
 
 ## ⚠️ 注意事项
 
-1. **路径中的占位符**（如 `{guild_id}`、`{channel_id}`）必须替换为实际值
-2. **query 参数的值必须为字符串类型**，如 `{ "limit": "100" }` 而非 `{ "limit": 100 }`
-3. **成员列表翻页**时可能返回重复成员，需按 `user.id` 去重
-4. **公告**的两种类型（消息公告和推荐子频道公告）会互相顶替
-5. **日程**的时间戳为毫秒级字符串
-6. **删除操作不可逆**，请谨慎使用
-7. **论坛操作**仅私域机器人可用
-8. **子频道分组**（type=4）的 `position` 必须 >= 2
-9. **日程操作**有频率限制：单个管理员每天 10 次，单个频道每天 100 次
-10. **头像/图标展示**：成员 `user.avatar` 和频道 `icon` 等图片 URL 必须使用 Markdown 图片语法 `![描述](URL)` 展示，禁止作为纯文本或超链接展示
+1. **适用范围**：本 Skill 仅处理 QQ 频道（Guild/Channel）操作，API 路径以 `/guilds/` 或 `/channels/` 开头，ID 为纯数字
+2. **路径中的占位符**（如 `{guild_id}`、`{channel_id}`）必须替换为实际的纯数字 ID
+3. **query 参数的值必须为字符串类型**，如 `{ "limit": "100" }` 而非 `{ "limit": 100 }`
+4. **成员列表翻页**时可能返回重复成员，需按 `user.id` 去重
+5. **公告**的两种类型（消息公告和推荐子频道公告）会互相顶替
+6. **日程**的时间戳为毫秒级字符串
+7. **删除操作不可逆**，请谨慎使用
+8. **论坛操作**仅私域机器人可用
+9. **子频道分组**（type=4）的 `position` 必须 >= 2
+10. **日程操作**有频率限制：单个管理员每天 10 次，单个频道每天 100 次
+11. **头像/图标展示**：成员 `user.avatar` 和频道 `icon` 等图片 URL 必须使用 Markdown 图片语法 `![描述](URL)` 展示，禁止作为纯文本或超链接展示

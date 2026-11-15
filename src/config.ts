@@ -69,6 +69,8 @@ function evaluateMatchedGroupAccessForPolicy(params: {
 }
 
 interface QQBotChannelConfig extends QQBotAccountConfig {
+  /** HTTP/WebSocket User-Agent 追加后缀 */
+  userAgentSuffix?: string;
   accounts?: Record<string, QQBotAccountConfig>;
 }
 
@@ -77,7 +79,10 @@ interface QQBotChannelConfig extends QQBotAccountConfig {
 const DEFAULT_GROUP_POLICY: GroupPolicy = "open";
 
 /** 群历史缓存条数默认值 */
-const DEFAULT_GROUP_HISTORY_LIMIT = 50;
+const DEFAULT_GROUP_HISTORY_LIMIT = 20;
+
+/** 单条消息默认处理超时（0 = 不限制） */
+const DEFAULT_PROCESSING_TIMEOUT_MS = 0;
 
 const DEFAULT_GROUP_CONFIG: Omit<Required<GroupConfig>, "prompt"> = {
   requireMention: true,
@@ -108,8 +113,9 @@ export function resolveGroupAllowFrom(cfg: OpenClawConfig, accountId?: string): 
 
 /** 检查指定群是否被允许（使用标准策略引擎） */
 export function isGroupAllowed(cfg: OpenClawConfig, groupOpenid: string, accountId?: string): boolean {
-  const policy = resolveGroupPolicy(cfg, accountId);
-  const allowList = resolveGroupAllowFrom(cfg, accountId);
+  const account = resolveQQBotAccount(cfg, accountId);
+  const policy = account.config?.groupPolicy ?? DEFAULT_GROUP_POLICY;
+  const allowList = (account.config?.groupAllowFrom ?? []).map((id) => String(id).trim().toUpperCase());
   const allowlistConfigured = allowList.length > 0;
   const allowlistMatched = allowList.some((id) => id === "*" || id === groupOpenid.toUpperCase());
 
@@ -120,24 +126,26 @@ export function isGroupAllowed(cfg: OpenClawConfig, groupOpenid: string, account
   }).allowed;
 }
 
-type ResolvedGroupConfig = Omit<Required<GroupConfig>, "prompt"> & Pick<GroupConfig, "prompt">;
+export type ResolvedGroupConfig = Required<GroupConfig>;
 
-/** 解析指定群配置（具体 groupOpenid > 通配符 "*" > 默认值） */
-export function resolveGroupConfig(cfg: OpenClawConfig, groupOpenid: string, accountId?: string): ResolvedGroupConfig {
-  const account = resolveQQBotAccount(cfg, accountId);
+export function resolveGroupConfigFromAccount(account: ResolvedQQBotAccount, groupOpenid: string): ResolvedGroupConfig {
   const groups = account.config?.groups ?? {};
-
   const wildcardCfg = groups["*"] ?? {};
   const specificCfg = groups[groupOpenid] ?? {};
+  const accountDefaultRequireMention = account.config?.defaultRequireMention ?? DEFAULT_GROUP_CONFIG.requireMention;
 
   return {
-    requireMention: specificCfg.requireMention ?? wildcardCfg.requireMention ?? DEFAULT_GROUP_CONFIG.requireMention,
+    requireMention: specificCfg.requireMention ?? wildcardCfg.requireMention ?? accountDefaultRequireMention,
     ignoreOtherMentions: specificCfg.ignoreOtherMentions ?? wildcardCfg.ignoreOtherMentions ?? DEFAULT_GROUP_CONFIG.ignoreOtherMentions,
     toolPolicy: specificCfg.toolPolicy ?? wildcardCfg.toolPolicy ?? DEFAULT_GROUP_CONFIG.toolPolicy,
     name: specificCfg.name ?? wildcardCfg.name ?? DEFAULT_GROUP_CONFIG.name,
-    prompt: specificCfg.prompt ?? wildcardCfg.prompt,
+    prompt: specificCfg.prompt ?? wildcardCfg.prompt ?? DEFAULT_GROUP_PROMPT,
     historyLimit: specificCfg.historyLimit ?? wildcardCfg.historyLimit ?? DEFAULT_GROUP_CONFIG.historyLimit,
   };
+}
+
+export function resolveGroupConfig(cfg: OpenClawConfig, groupOpenid: string, accountId?: string): ResolvedGroupConfig {
+  return resolveGroupConfigFromAccount(resolveQQBotAccount(cfg, accountId), groupOpenid);
 }
 
 /** 解析群历史消息缓存条数 */
@@ -147,10 +155,7 @@ export function resolveHistoryLimit(cfg: OpenClawConfig, groupOpenid: string, ac
 
 /** 解析群行为 PE（具体群 > "*" > 默认值） */
 export function resolveGroupPrompt(cfg: OpenClawConfig, groupOpenid: string, accountId?: string): string {
-  const account = resolveQQBotAccount(cfg, accountId);
-  const groups = account.config?.groups ?? {};
-
-  return groups[groupOpenid]?.prompt ?? groups["*"]?.prompt ?? DEFAULT_GROUP_PROMPT;
+  return resolveGroupConfig(cfg, groupOpenid, accountId).prompt;
 }
 
 /** 解析群是否需要 @机器人才响应 */
@@ -172,6 +177,14 @@ export function resolveToolPolicy(cfg: OpenClawConfig, groupOpenid: string, acco
 export function resolveGroupName(cfg: OpenClawConfig, groupOpenid: string, accountId?: string): string {
   const name = resolveGroupConfig(cfg, groupOpenid, accountId).name;
   return name || groupOpenid.slice(0, 8);
+}
+
+/**
+ * 解析 User-Agent 追加后缀（仅通道级：channels.qqbot.userAgentSuffix）
+ */
+export function resolveUserAgentSuffix(cfg: OpenClawConfig): string {
+  const qqbot = cfg.channels?.qqbot as QQBotChannelConfig | undefined;
+  return qqbot?.userAgentSuffix ? String(qqbot.userAgentSuffix).trim() : "";
 }
 
 function normalizeAppId(raw: unknown): string {
@@ -218,6 +231,25 @@ export function resolveDefaultQQBotAccountId(cfg: OpenClawConfig): string {
     }
   }
   return DEFAULT_ACCOUNT_ID;
+}
+
+/**
+ * 解析单条消息处理超时时间（ms）。
+ * 优先级：账户配置 > 环境变量 OPENCLAW_PROCESSING_TIMEOUT_MS > 默认
+ * 返回 0 表示不限制超时。
+ */
+export function resolveProcessingTimeoutMs(
+  accountConfig?: QQBotAccountConfig,
+): number {
+  if (accountConfig?.processingTimeoutMs !== undefined) {
+    return accountConfig.processingTimeoutMs;
+  }
+  const env = process.env.OPENCLAW_PROCESSING_TIMEOUT_MS;
+  if (env) {
+    const v = Number(env);
+    if (!Number.isNaN(v) && v >= 0) return v;
+  }
+  return DEFAULT_PROCESSING_TIMEOUT_MS;
 }
 
 /**
@@ -276,10 +308,20 @@ export function resolveQQBotAccount(
     clientSecret,
     secretSource,
     systemPrompt: accountConfig.systemPrompt,
-    imageServerBaseUrl: accountConfig.imageServerBaseUrl || process.env.QQBOT_IMAGE_SERVER_BASE_URL,
     markdownSupport: accountConfig.markdownSupport !== false,
-    config: accountConfig,
+    userAgentSuffix: resolveUserAgentSuffix(cfg),
+    processingTimeoutMs: resolveProcessingTimeoutMs(accountConfig),
+    config: normalizeAccountConfig(accountConfig),
   };
+}
+
+/** 兼容旧版 streaming: boolean 格式 → { mode: "partial" | "off" }，对齐框架 schema */
+function normalizeAccountConfig(raw: QQBotAccountConfig): QQBotAccountConfig {
+  if (typeof (raw as any).streaming === 'boolean') {
+    const { streaming, ...rest } = raw as any;
+    return { ...rest, streaming: { mode: streaming ? 'partial' : 'off' } };
+  }
+  return raw;
 }
 
 /**
@@ -288,7 +330,7 @@ export function resolveQQBotAccount(
 export function applyQQBotAccountConfig(
   cfg: OpenClawConfig,
   accountId: string,
-  input: { appId?: string; clientSecret?: string; clientSecretFile?: string; name?: string; imageServerBaseUrl?: string }
+  input: { appId?: string; clientSecret?: string; clientSecretFile?: string; name?: string }
 ): OpenClawConfig {
   const next = { ...cfg };
 
@@ -310,7 +352,6 @@ export function applyQQBotAccountConfig(
             ? { clientSecretFile: input.clientSecretFile }
             : {}),
         ...(input.name ? { name: input.name } : {}),
-        ...(input.imageServerBaseUrl ? { imageServerBaseUrl: input.imageServerBaseUrl } : {}),
       },
     };
   } else {
@@ -336,7 +377,6 @@ export function applyQQBotAccountConfig(
                 ? { clientSecretFile: input.clientSecretFile }
                 : {}),
             ...(input.name ? { name: input.name } : {}),
-            ...(input.imageServerBaseUrl ? { imageServerBaseUrl: input.imageServerBaseUrl } : {}),
           },
         },
       },

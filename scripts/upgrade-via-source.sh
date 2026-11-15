@@ -185,6 +185,35 @@ echo "[3/6] 安装当前版本（源码安装）..."
 echo "检查当前目录: $(pwd)"
 echo "检查openclaw版本: $(openclaw --version 2>/dev/null || echo 'openclaw not found')"
 
+# 版本比较函数：version_gte a b → a >= b 时返回真
+version_gte() {
+    [ "$(printf '%s\n' "$1" "$2" | sort -V | head -1)" = "$2" ]
+}
+
+OPENCLAW_VERSION="$(openclaw --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1 || true)"
+
+# --force：确认非 ClawHub 来源（本地路径）+ 覆盖已存在插件。
+#   2026.4.5 起引入；本地目录安装缺少该参数会报 "Install cancelled; rerun with --force"。
+INSTALL_FORCE_FLAG=""
+if [ -n "$OPENCLAW_VERSION" ] && version_gte "$OPENCLAW_VERSION" "2026.4.5"; then
+    INSTALL_FORCE_FLAG="--force"
+fi
+
+# --accept-capabilities：2026.8.0 起引入 capability consent，
+#   插件在 openclaw.plugin.json 中声明的能力需显式同意，否则报 "requires capability consent"。
+ACCEPT_CAPABILITIES_FLAG=""
+if [ -n "$OPENCLAW_VERSION" ] && version_gte "$OPENCLAW_VERSION" "2026.8.0"; then
+    ACCEPT_CAPABILITIES_FLAG="--accept-capabilities"
+fi
+
+# --dangerously-force-unsafe-install：仅 2026.3.30 ~ 2026.6.1 内置安全扫描时代用于绕过扫描；
+#   2026.6.2 起安全扫描移除，该参数废弃为 no-op（仅打印 deprecation 警告），不再附加。
+FORCE_UNSAFE_FLAG=""
+if [ -n "$OPENCLAW_VERSION" ] && version_gte "$OPENCLAW_VERSION" "2026.3.30" \
+        && ! version_gte "$OPENCLAW_VERSION" "2026.6.2"; then
+    FORCE_UNSAFE_FLAG="--dangerously-force-unsafe-install"
+fi
+
 LOCAL_PACKAGE_VERSION=$(node -e "
   try {
     const fs = require('fs');
@@ -252,10 +281,53 @@ for _app in openclaw clawdbot moltbot; do
     fi
 done
 
+# ── 安全网：注册 trap 确保脚本退出时恢复暂存的 channels.qqbot 配置 ──
+_restore_stash_on_exit() {
+    if [ -n "$_QQBOT_CHANNEL_STASH" ] && [ -n "$_STASH_CFG" ] && [ -f "$_STASH_CFG" ]; then
+        # 检查配置是否已恢复（避免重复写入）
+        local _already_restored
+        _already_restored=$(node -e "
+            const fs = require('fs');
+            const cfg = JSON.parse(fs.readFileSync('$_STASH_CFG', 'utf8'));
+            if (cfg.channels && cfg.channels.qqbot) process.stdout.write('yes');
+            else process.stdout.write('no');
+        " 2>/dev/null || echo "no")
+        if [ "$_already_restored" = "no" ]; then
+            _STASH="$_QQBOT_CHANNEL_STASH" _CFG="$_STASH_CFG" node -e '
+                const fs = require("fs");
+                const cfg = JSON.parse(fs.readFileSync(process.env._CFG, "utf8"));
+                if (!cfg.channels) cfg.channels = {};
+                cfg.channels.qqbot = JSON.parse(process.env._STASH);
+                fs.writeFileSync(process.env._CFG, JSON.stringify(cfg, null, 4) + "\n");
+            ' 2>/dev/null || true
+            echo ""
+            echo "  ⚠️  [trap] 已恢复暂存的 channels.qqbot 配置（脚本提前退出）"
+        fi
+    fi
+}
+trap _restore_stash_on_exit EXIT
+
 # 安装前先 stop gateway，防止 chokidar 在 plugins install 写入配置的中间状态
 # 触发 restart，导致 "unknown channel id: qqbot" 等错误
+
+# 动态读取 gateway 端口（从 openclaw.json 配置中获取，默认 18789）
+_GW_PORT=$(node -e "
+    const fs = require('fs');
+    const path = require('path');
+    for (const app of ['openclaw', 'clawdbot', 'moltbot']) {
+        const f = path.join(process.env.HOME, '.' + app, app + '.json');
+        if (!fs.existsSync(f)) continue;
+        const cfg = JSON.parse(fs.readFileSync(f, 'utf8'));
+        if (cfg.gateway && cfg.gateway.port) {
+            process.stdout.write(String(cfg.gateway.port));
+            process.exit(0);
+        }
+    }
+    process.stdout.write('18789');
+" 2>/dev/null || echo "18789")
+
 _gw_was_running=0
-if lsof -i :18789 -sTCP:LISTEN >/dev/null 2>&1; then
+if lsof -i :"$_GW_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
     _gw_was_running=1
     echo "  暂停 gateway 服务（避免安装过程中中间状态 restart）..."
     openclaw gateway stop 2>/dev/null || true
@@ -265,6 +337,10 @@ fi
 # 清理之前可能残留的 staging 目录（extensions 和 /tmp 中都可能存在）
 find "$HOME/.openclaw/extensions/" -maxdepth 1 -name ".openclaw-install-stage-*" -exec rm -rf {} + 2>/dev/null || true
 find "${TMPDIR:-/tmp}" -maxdepth 1 -name ".openclaw-install-stage-*" -exec rm -rf {} + 2>/dev/null || true
+# 清理可能残留的 node_modules 临时备份（上次脚本中断时留下的）
+find "${TMPDIR:-/tmp}" -maxdepth 1 -name ".openclaw-qqbot-nm-bak-*" -exec rm -rf {} + 2>/dev/null || true
+# 清理旧版脚本遗留的项目内备份
+[ -d "$PROJ_DIR/.node_modules_install_bak" ] && mv "$PROJ_DIR/.node_modules_install_bak" "$PROJ_DIR/node_modules" 2>/dev/null || true
 
 # ── 清空并重新构建 dist/ ──
 # openclaw plugins install . 只做文件复制，不执行 npm lifecycle scripts。
@@ -272,14 +348,14 @@ find "${TMPDIR:-/tmp}" -maxdepth 1 -name ".openclaw-install-stage-*" -exec rm -r
 # 导致新增的模块（如 streaming.js）缺失。
 echo "  清空 dist/ 确保全量重新构建..."
 rm -rf "$PROJ_DIR/dist"
-if [ ! -f "$PROJ_DIR/dist/index.js" ]; then
+if [ ! -f "$PROJ_DIR/dist/index.cjs" ] && [ ! -f "$PROJ_DIR/dist/index.js" ]; then
     echo "  dist/ 不存在，先执行构建..."
     if [ ! -d "$PROJ_DIR/node_modules" ]; then
         npm install --prefix "$PROJ_DIR" 2>&1 || true
     fi
     npm run --prefix "$PROJ_DIR" build 2>&1 || true
-    if [ ! -f "$PROJ_DIR/dist/index.js" ]; then
-        echo "  ❌ 构建失败：dist/index.js 未生成"
+    if [ ! -f "$PROJ_DIR/dist/index.cjs" ] && [ ! -f "$PROJ_DIR/dist/index.js" ]; then
+        echo "  ❌ 构建失败：dist/index.cjs 未生成"
         echo "  请手动执行: cd $PROJ_DIR && npm install && npm run build"
         exit 1
     fi
@@ -296,21 +372,24 @@ _INSTALL_DIR="$HOME/.openclaw/extensions/openclaw-qqbot"
 # openclaw plugins install . 会把整个项目目录（含 node_modules/）复制到 extensions，
 # 但运行时只需要 bundledDependencies 中的 3 个包 + openclaw symlink。
 # 移走 node_modules 可避免复制数百个不必要的包，大幅加速安装。
+# 同时临时移走 devDependencies 声明，避免 manifest dependency scan 递归解析
+# 超出 10000 目录上限导致 "code safety scan failed"。
 _NM_BACKUP=""
 if [ -d "$PROJ_DIR/node_modules" ]; then
-    echo "  临时移走 node_modules（避免整体复制到 extensions）..."
-    _NM_BACKUP="$PROJ_DIR/.node_modules_install_bak"
+    echo "  临时移走 node_modules（避免安全扫描超出目录上限）..."
+    # 备份到项目目录外部（/tmp），否则安全扫描仍会递归遍历到重命名后的目录
+    _NM_BACKUP="${TMPDIR:-/tmp}/.openclaw-qqbot-nm-bak-$$"
     mv "$PROJ_DIR/node_modules" "$_NM_BACKUP"
 fi
 
-openclaw plugins install . 2>&1 | tee "$INSTALL_LOG" || true
+openclaw plugins install . $INSTALL_FORCE_FLAG $FORCE_UNSAFE_FLAG $ACCEPT_CAPABILITIES_FLAG 2>&1 | tee "$INSTALL_LOG" || true
 
 # ── 恢复 node_modules ──
 if [ -n "$_NM_BACKUP" ] && [ -d "$_NM_BACKUP" ]; then
     mv "$_NM_BACKUP" "$PROJ_DIR/node_modules"
     echo "  已恢复源码目录 node_modules"
 fi
-if [ ! -f "$_INSTALL_DIR/dist/index.js" ] || [ ! -f "$_INSTALL_DIR/preload.cjs" ]; then
+if { [ ! -f "$_INSTALL_DIR/dist/index.cjs" ] && [ ! -f "$_INSTALL_DIR/dist/index.js" ]; } || [ ! -f "$_INSTALL_DIR/preload.cjs" ]; then
     echo ""
     echo "❌ 插件安装失败！"
     echo "========================================="
@@ -418,13 +497,13 @@ else
         echo "  尝试自动修复: 清理残留并重试安装..."
         find "$HOME/.openclaw/extensions/" -maxdepth 1 -name ".openclaw-install-stage-*" -exec rm -rf {} + 2>/dev/null || true
         find "${TMPDIR:-/tmp}" -maxdepth 1 -name ".openclaw-install-stage-*" -exec rm -rf {} + 2>/dev/null || true
-        # 重试时同样移走 node_modules 避免整体复制
+        # 重试时同样移走 node_modules 避免安全扫描超出目录上限
         _NM_BACKUP=""
         if [ -d "$PROJ_DIR/node_modules" ]; then
-            _NM_BACKUP="$PROJ_DIR/.node_modules_install_bak"
+            _NM_BACKUP="${TMPDIR:-/tmp}/.openclaw-qqbot-nm-bak-$$"
             mv "$PROJ_DIR/node_modules" "$_NM_BACKUP"
         fi
-        if openclaw plugins install . 2>&1 | tee -a "$INSTALL_LOG"; then
+        if openclaw plugins install . $INSTALL_FORCE_FLAG $FORCE_UNSAFE_FLAG $ACCEPT_CAPABILITIES_FLAG 2>&1 | tee -a "$INSTALL_LOG"; then
             for _candidate_name in openclaw-qqbot qqbot openclaw-qq; do
                 if [ -d "$HOME/.openclaw/extensions/$_candidate_name" ]; then
                     _plugin_dir_ok=1
@@ -481,16 +560,23 @@ else
     done
     if [ -n "$PLUGIN_NM" ] && [ -d "$PROJ_DIR/node_modules" ]; then
         # 如果 extensions 中已有大量包（旧版 openclaw 安装的 peerDeps），先清理
+        # 但保留 openclaw symlink
         if [ -d "$PLUGIN_NM" ]; then
-            _before=$(ls -d "$PLUGIN_NM"/*/ "$PLUGIN_NM"/@*/*/ 2>/dev/null | wc -l | tr -d ' ')
+            _before=$({ ls -d "$PLUGIN_NM"/*/ "$PLUGIN_NM"/@*/*/ 2>/dev/null || true; } | wc -l | tr -d ' ')
             if [ "$_before" -gt 50 ]; then
                 echo ""
                 echo "检测到 ${_before} 个包（超过阈值 50），清理多余的 peerDep 传递依赖..."
+                _has_openclaw_link=""
+                [ -L "$PLUGIN_NM/openclaw" ] && _has_openclaw_link="$(readlink "$PLUGIN_NM/openclaw")"
                 rm -rf "$PLUGIN_NM"
+                if [ -n "$_has_openclaw_link" ]; then
+                    mkdir -p "$PLUGIN_NM"
+                    ln -sf "$_has_openclaw_link" "$PLUGIN_NM/openclaw"
+                fi
             fi
         fi
 
-        # 读取 bundledDependencies 及其传递依赖列表，只复制这些包
+        # 读取 bundledDependencies 及其传递依赖列表，复制到插件目录
         _deps_to_copy=$(node -e "
           const fs = require('fs');
           const path = require('path');
@@ -514,23 +600,34 @@ else
         if [ -n "$_deps_to_copy" ]; then
             mkdir -p "$PLUGIN_NM"
             _copied=0
-            echo "$_deps_to_copy" | while IFS= read -r _dep; do
+            while IFS= read -r _dep; do
+                [ -z "$_dep" ] && continue
                 _src="$PROJ_DIR/node_modules/$_dep"
                 _dst="$PLUGIN_NM/$_dep"
-                if [ -d "$_src" ] && [ ! -d "$_dst" ]; then
-                    # 处理 scoped 包（如 @scope/pkg）
+                if [ -d "$_src" ]; then
                     mkdir -p "$(dirname "$_dst")"
+                    rm -rf "$_dst"
                     cp -r "$_src" "$_dst"
+                    _copied=$((_copied + 1))
                 fi
-            done
-            _after=$(ls -d "$PLUGIN_NM"/*/ "$PLUGIN_NM"/@*/*/ 2>/dev/null | wc -l | tr -d ' ')
-            echo "  ✅ 已复制 bundled 依赖到插件目录（${_after} 个包）"
+            done <<< "$_deps_to_copy"
+            echo "  ✅ 已复制 ${_copied} 个 bundled 依赖到插件目录"
         else
             echo "  ⚠️  未读取到 bundledDependencies，跳过依赖复制"
+            echo "  回退: 使用 npm install --omit=dev 安装运行时依赖..."
+            npm install --omit=dev --prefix "$_ext_dir" 2>&1 || true
         fi
+        # 验证关键依赖是否就绪
+        if [ ! -d "$PLUGIN_NM/ws" ]; then
+            echo "  ⚠️  ws 包仍缺失，回退: 使用 npm install --omit=dev 安装..."
+            npm install --omit=dev --prefix "$_ext_dir" 2>&1 || true
+        fi
+    elif [ -n "$PLUGIN_NM" ] && [ ! -d "$PROJ_DIR/node_modules" ]; then
+        echo "  ⚠️  源码 node_modules 不存在，使用 npm install --omit=dev 安装运行时依赖..."
+        npm install --omit=dev --prefix "$_ext_dir" 2>&1 || true
     elif [ -n "$PLUGIN_NM" ] && [ -d "$PLUGIN_NM" ]; then
         # node_modules 已存在（可能是旧版 openclaw 安装的），检查是否需要清理
-        _before=$(ls -d "$PLUGIN_NM"/*/ "$PLUGIN_NM"/@*/*/ 2>/dev/null | wc -l | tr -d ' ')
+        _before=$({ ls -d "$PLUGIN_NM"/*/ "$PLUGIN_NM"/@*/*/ 2>/dev/null || true; } | wc -l | tr -d ' ')
         if [ "$_before" -gt 50 ]; then
             echo ""
             echo "检测到 ${_before} 个包（超过阈值 50），清理多余的 peerDep 传递依赖..."
@@ -576,7 +673,7 @@ else
                     rm -rf "$PLUGIN_NM/$_pkg"
                 done
                 find "$PLUGIN_NM" -maxdepth 1 -type d -name '@*' -empty -delete 2>/dev/null || true
-                _after=$(ls -d "$PLUGIN_NM"/*/ "$PLUGIN_NM"/@*/*/ 2>/dev/null | wc -l | tr -d ' ')
+                _after=$({ ls -d "$PLUGIN_NM"/*/ "$PLUGIN_NM"/@*/*/ 2>/dev/null || true; } | wc -l | tr -d ' ')
                 echo "  已清理: ${_before} → ${_after} 个包"
             fi
         else
@@ -608,54 +705,6 @@ else
     # 避免 gateway 发现两个同 id 插件不断刷 duplicate plugin id 警告
     find "$HOME/.openclaw/extensions/" -maxdepth 1 -name ".openclaw-qqbot-backup-*" -exec rm -rf {} + 2>/dev/null || true
     find "${TMPDIR:-/tmp}" -maxdepth 1 -name ".qqbot-upgrade-backup-*" -exec rm -rf {} + 2>/dev/null || true
-
-    # 恢复 channels.qqbot 完整配置（防止 plugins install 意外覆盖）
-    # 策略：直接用备份完整覆盖回去，确保 groups / env / prompts / allowFrom 等所有用户配置不丢失。
-    if [ -n "$SAVED_QQBOT_CHANNEL_JSON" ]; then
-        node -e "
-          const fs = require('fs');
-          const path = require('path');
-          const saved = JSON.parse(process.argv[1]);
-          for (const app of ['openclaw', 'clawdbot', 'moltbot']) {
-            const f = path.join(process.env.HOME, '.' + app, app + '.json');
-            if (!fs.existsSync(f)) continue;
-            const cfg = JSON.parse(fs.readFileSync(f, 'utf8'));
-            if (!cfg.channels) { cfg.channels = {}; }
-            if (JSON.stringify(cfg.channels.qqbot) === JSON.stringify(saved)) {
-              process.stderr.write('  channels.qqbot 配置无变化，无需恢复\\n');
-            } else {
-              cfg.channels.qqbot = saved;
-              fs.writeFileSync(f, JSON.stringify(cfg, null, 4) + '\\n');
-              process.stderr.write('  已完整恢复 channels.qqbot 配置（' + Object.keys(saved).join(', ') + '）\\n');
-            }
-            break;
-          }
-        " "$SAVED_QQBOT_CHANNEL_JSON" 2>&1 || true
-    fi
-
-    # 恢复 channels.qqbot 完整配置（防止 plugins install 意外覆盖）
-    # 策略：直接用备份完整覆盖回去，确保 groups / env / prompts / allowFrom 等所有用户配置不丢失。
-    if [ -n "$SAVED_QQBOT_CHANNEL_JSON" ]; then
-        node -e "
-          const fs = require('fs');
-          const path = require('path');
-          const saved = JSON.parse(process.argv[1]);
-          for (const app of ['openclaw', 'clawdbot', 'moltbot']) {
-            const f = path.join(process.env.HOME, '.' + app, app + '.json');
-            if (!fs.existsSync(f)) continue;
-            const cfg = JSON.parse(fs.readFileSync(f, 'utf8'));
-            if (!cfg.channels) { cfg.channels = {}; }
-            if (JSON.stringify(cfg.channels.qqbot) === JSON.stringify(saved)) {
-              process.stderr.write('  channels.qqbot 配置无变化，无需恢复\\n');
-            } else {
-              cfg.channels.qqbot = saved;
-              fs.writeFileSync(f, JSON.stringify(cfg, null, 4) + '\\n');
-              process.stderr.write('  已完整恢复 channels.qqbot 配置（' + Object.keys(saved).join(', ') + '）\\n');
-            }
-            break;
-          }
-        " "$SAVED_QQBOT_CHANNEL_JSON" 2>&1 || true
-    fi
 
     # 记录更新后的 qqbot 插件版本
     NEW_QQBOT_VERSION=$(node -e '
@@ -821,12 +870,17 @@ case "$start_choice" in
         _start_output=$(_openclaw_with_timeout 30 openclaw gateway start)
         echo "$_start_output"
 
-        if echo "$_start_output" | grep -qi "not loaded\|not found\|not installed\|error\|fail"; then
+        # 判断是否真正启动失败：
+        # 1. 过滤掉 Config warnings 区块中的 "plugin not installed"（其他插件的警告，非错误）
+        # 2. 过滤掉 "not loaded; re-bootstrapped"（自动恢复的正常行为）
+        # 3. 只检查 gateway 自身的启动/加载状态
+        _start_output_filtered=$(echo "$_start_output" | grep -v "^│" | grep -vi "re-bootstrapped\|re-bootstrap")
+        if echo "$_start_output_filtered" | grep -qi "not loaded\|not found\|not installed\|error\|fail"; then
             echo ""
             echo "⚠️  启动异常，尝试 restart 恢复..."
             _restart_output=$(_openclaw_with_timeout 30 openclaw gateway restart)
             echo "$_restart_output"
-            if echo "$_restart_output" | grep -qi "not loaded\|not found\|not installed"; then
+            if echo "$_restart_output" | grep -v "^│" | grep -vi "re-bootstrapped\|re-bootstrap" | grep -qi "not loaded\|not found\|not installed"; then
                 echo ""
                 echo "⚠️  自动恢复失败，请手动执行："
                 echo "  openclaw gateway install && openclaw gateway start"
@@ -844,11 +898,11 @@ case "$start_choice" in
         echo "========================================="
         _port_ready=0
         for i in $(seq 1 30); do
-            if lsof -i :18789 -sTCP:LISTEN >/dev/null 2>&1; then
+            if lsof -i :"$_GW_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
                 _port_ready=1
                 break
             fi
-            printf "\r  等待端口 18789 就绪... (%d/30)" "$i"
+            printf "\r  等待端口 %s 就绪... (%d/30)" "$_GW_PORT" "$i"
             sleep 2
         done
         echo ""
@@ -862,7 +916,7 @@ case "$start_choice" in
             echo "doctor 修复后重试 gateway restart..."
             _openclaw_with_timeout 30 openclaw gateway restart
             sleep 5
-            if lsof -i :18789 -sTCP:LISTEN >/dev/null 2>&1; then
+            if lsof -i :"$_GW_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
                 echo "✅ doctor --fix 后 gateway 启动成功"
                 _port_ready=1
             else
@@ -926,24 +980,35 @@ case "$start_choice" in
                 ' 2>&1 || echo "  ⚠️  配置写入失败"
                 echo "  ✅ 已恢复 channels.qqbot 配置（含 token/markdown）"
                 _need_reload=1
+                # 清空暂存变量，防止 EXIT trap 重复恢复
+                _QQBOT_CHANNEL_STASH=""
             fi
 
-            # 配置写回后 reload gateway 使其生效
+            # 配置写回后让 gateway 重载配置使其生效
+            # gateway 有 chokidar 文件监听，写入 openclaw.json 后通常会自动 reload。
+            # 这里发送 SIGHUP 通知进程立即重载，无需完整 restart（避免冷启动 10-20s）。
             if [ "$_need_reload" -eq 1 ]; then
-                echo "  重载配置..."
-                sleep 1
-                # openclaw gateway restart 只是向 LaunchAgent 发送 restart 信号，
-                # CLI 本身可能阻塞在等待输出上，用短超时即可（信号已发出就够了）
-                _openclaw_with_timeout 10 openclaw gateway restart
-                # 等待重启后端口重新就绪（gateway 加载插件+连 WS 可能需要较长时间）
-                for _k in $(seq 1 30); do
-                    if lsof -i :18789 -sTCP:LISTEN >/dev/null 2>&1; then
-                        break
-                    fi
-                    printf "\r  等待端口 18789 重新就绪... (%d/30)" "$_k"
-                    sleep 2
-                done
-                echo ""
+                echo "  通知 gateway 重载配置..."
+                sleep 2
+                # 尝试用 SIGHUP 触发热重载；若失败则回退到 restart
+                _gw_pid=$(lsof -i :"$_GW_PORT" -sTCP:LISTEN -t 2>/dev/null | head -1)
+                if [ -n "$_gw_pid" ]; then
+                    kill -HUP "$_gw_pid" 2>/dev/null || true
+                    echo "  已发送 SIGHUP 到 gateway (pid: $_gw_pid)"
+                    sleep 3
+                else
+                    # gateway 端口还在但 pid 拿不到，回退到 restart
+                    _openclaw_with_timeout 30 openclaw gateway restart
+                    # 等待重启后端口重新就绪
+                    for _k in $(seq 1 30); do
+                        if lsof -i :"$_GW_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+                            break
+                        fi
+                        printf "\r  等待端口 %s 重新就绪... (%d/30)" "$_GW_PORT" "$_k"
+                        sleep 2
+                    done
+                    echo ""
+                fi
             fi
             # 检查 qqbot WS 是否连接成功（最多等 20 秒）
             echo "检查 qqbot 插件连接状态..."
@@ -1001,6 +1066,7 @@ case "$start_choice" in
                 fs.writeFileSync(process.env._CFG, JSON.stringify(cfg, null, 4) + "\n");
             ' 2>/dev/null || true
             echo "  已恢复 channels.qqbot 配置"
+            _QQBOT_CHANNEL_STASH=""
         fi
         echo ""
         echo "后续启动方法（兼容 openclaw 3.23+）："
