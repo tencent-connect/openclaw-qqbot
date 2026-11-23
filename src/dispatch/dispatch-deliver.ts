@@ -17,6 +17,8 @@ export type StreamTextOwner = {
   hasStarted: boolean;
   shouldFallbackToStatic: boolean;
   isTerminal: boolean;
+  /** 气泡里当前已确认显示的文本；缺省表示实现方不提供该信息 */
+  acceptedText?: string;
   finalize(): Promise<void>;
 };
 
@@ -71,10 +73,25 @@ export async function deliverDispatchPayload(
   }
 
   if (streamOwnsText(state.streamingController)) {
-    if (state.streamingController && !state.streamingController.isTerminal) {
-      await state.streamingController.finalize();
+    const controller = state.streamingController;
+    if (controller && !controller.isTerminal) {
+      await controller.finalize();
     }
-    if (!state.streamingController?.shouldFallbackToStatic) {
+    if (!controller?.shouldFallbackToStatic) {
+      // 流式气泡已经收尾。此前这里直接 return，默认「气泡里就是全文」；
+      // 一旦最后一次 update 失败、或终稿比气泡里已显示的内容更长，尾巴就会被静默丢掉。
+      // 只在终稿以已显示文本为前缀时补发差额，避免重复发送。
+      const accepted = controller?.acceptedText ?? '';
+      if (accepted && text && text !== accepted && text.startsWith(accepted)) {
+        const tail = text.slice(accepted.length);
+        if (tail.trim()) {
+          state.log?.warn(
+            `stream accepted partial text; sending remaining tail (accepted=${accepted.length} total=${text.length} tail=${tail.length})`,
+          );
+          await sendReply({ text: tail }, info, state.ctx);
+          state.deliveredTexts.add(text);
+        }
+      }
       return;
     }
     state.log?.warn(`streaming fallback to static`);

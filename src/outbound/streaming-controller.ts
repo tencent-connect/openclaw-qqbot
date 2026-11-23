@@ -66,6 +66,9 @@ export class StreamingController {
     return this.isTerminal && this.sentChunkCount === 0;
   }
 
+  /** 气泡里当前已确认显示的文本（收尾时用于判断终稿是否还有尾巴没发） */
+  get acceptedText(): string { return this.lastAcceptedFull; }
+
   // ── 入口 ──
 
   onPartialReply(text: string): Promise<void> {
