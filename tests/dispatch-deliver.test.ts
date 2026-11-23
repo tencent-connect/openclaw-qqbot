@@ -50,6 +50,7 @@ function createStreamOwner(overrides: Partial<StreamTextOwner> = {}): StreamText
     hasStarted: false,
     shouldFallbackToStatic: false,
     isTerminal: false,
+    acceptedText: '',
     finalized: 0,
     async finalize() {
       owner.finalized += 1;
@@ -275,6 +276,39 @@ await test('media forward failure is logged and does not throw', async () => {
   );
   assert.ok(logLines.some((line) => line.includes('media forward failed: upload failed')));
   assert.equal(state.deliveredMediaUrls.has('https://cdn/a.png'), false);
+});
+
+await test('kind=final sends the remaining tail when the bubble only shows part of the answer', async () => {
+  const { state, replies, logLines } = createState({
+    streamingController: createStreamOwner({
+      hasStarted: true,
+      acceptedText: 'The first half of the answer.',
+    }),
+  });
+  await deliverDispatchPayload(
+    { text: 'The first half of the answer. And the trailing part that never reached the bubble.' },
+    { kind: 'final' },
+    state,
+  );
+  assert.deepEqual(replies.map((r) => r.payload), [{ text: ' And the trailing part that never reached the bubble.' }]);
+  assert.ok(logLines.some((line) => line.includes('sending remaining tail')));
+});
+
+await test('kind=final sends nothing when the bubble already shows the whole answer', async () => {
+  const text = 'Already fully streamed answer.';
+  const { state, replies } = createState({
+    streamingController: createStreamOwner({ hasStarted: true, acceptedText: text }),
+  });
+  await deliverDispatchPayload({ text }, { kind: 'final' }, state);
+  assert.deepEqual(replies, []);
+});
+
+await test('kind=final does not append a tail when the final text diverges from the bubble', async () => {
+  const { state, replies } = createState({
+    streamingController: createStreamOwner({ hasStarted: true, acceptedText: 'Streamed wording A' }),
+  });
+  await deliverDispatchPayload({ text: 'Reworded answer B that shares no prefix' }, { kind: 'final' }, state);
+  assert.deepEqual(replies, []);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
